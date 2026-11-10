@@ -3,7 +3,7 @@
 실행:  streamlit run app.py
 
 화면 흐름
-1. 지도 클릭 → 출발지, 도착지 지정
+1. 장소 검색, 현재 위치, 지도 클릭 중 하나로 출발지·도착지 지정
 2. [경로 탐색] → 경로 후보 생성 → 시설 데이터 준비
 3. 경로별 시설 분석 → 점수 계산 → 카드·추천·설명 표시
 """
@@ -15,7 +15,13 @@ from streamlit_folium import st_folium
 from core import analysis, config, explain, recommend, texts, ui
 from core import facilities as fac
 from core import routes as rt
-from core.geo import bbox
+from core import search as sr
+from core.geo import bbox, haversine_m
+
+try:  # 현재 위치 읽기 부품 (없어도 앱은 동작)
+    from streamlit_js_eval import get_geolocation
+except ImportError:
+    get_geolocation = None
 from core.map_view import build_map
 
 st.set_page_config(
@@ -29,6 +35,15 @@ st.set_page_config(
 DEFAULT_STATE = {
     "start": None,        # (위도, 경도)
     "end": None,
+    "start_name": None,   # 화면에 보여줄 이름 (검색한 장소명, "현재 위치" 등)
+    "end_name": None,
+    "found_start": [],    # 장소 검색 결과
+    "found_end": [],
+    "found_seq": 0,
+    "search_msg_start": None,
+    "search_msg_end": None,
+    "locating": False,    # '현재 위치를 출발지로'를 누른 뒤 위치를 기다리는 중
+    "loc_msg": None,
     "last_click": None,   # 같은 클릭을 두 번 처리하지 않기 위한 기록
     "result": None,       # 탐색 결과 (경로 + 시설)
     "error": None,
@@ -48,19 +63,71 @@ def get_secret(name: str) -> str | None:
         return None
 
 
-def handle_click(point: tuple[float, float]) -> None:
-    if S.start is None:
-        S.start = point
-    elif S.end is None:
-        S.end = point
-    else:  # 둘 다 있으면 새로 시작
-        S.start, S.end = point, None
+def set_point(which: str, point, name: str) -> None:
+    """출발지(which='start') 또는 도착지('end')를 지정하고 이전 결과를 지운다."""
+    S[which] = point
+    S[f"{which}_name"] = name
+    S[f"found_{which}"] = []
     S.result = None
     S.error = None
 
 
+def handle_click(point: tuple[float, float]) -> None:
+    if S.start is None:
+        set_point("start", point, texts.MAP_PICK_NAME)
+    elif S.end is None:
+        set_point("end", point, texts.MAP_PICK_NAME)
+    else:  # 둘 다 있으면 새로 시작
+        set_point("start", point, texts.MAP_PICK_NAME)
+        S.end = S.end_name = None
+
+
 def reset() -> None:
     S.start = S.end = S.result = S.error = None
+    S.start_name = S.end_name = S.loc_msg = None
+    S.found_start, S.found_end = [], []
+    S.search_msg_start = S.search_msg_end = None
+    S.locating = False
+
+
+def run_place_search(which: str, keyword: str) -> None:
+    S[f"search_msg_{which}"] = None
+    S[f"found_{which}"] = []
+    try:
+        found = cached_places(keyword.strip(), get_secret("TMAP_APP_KEY"))
+    except sr.SearchError as e:
+        S[f"search_msg_{which}"] = str(e)
+        return
+    if not found:
+        S[f"search_msg_{which}"] = texts.SEARCH_EMPTY
+    S[f"found_{which}"] = found
+    S.found_seq += 1
+
+
+def start_locating() -> None:
+    S.locating = True
+    S.loc_msg = None
+
+
+def place_picker(which: str, label: str, placeholder: str) -> None:
+    """장소 검색창 + 후보 선택."""
+    with st.form(f"form_{which}", border=False):
+        keyword = st.text_input(f"{label} 검색", placeholder=placeholder, key=f"q_{which}")
+        submitted = st.form_submit_button("검색")
+    if submitted:
+        run_place_search(which, keyword)
+    if S[f"search_msg_{which}"]:
+        st.caption(S[f"search_msg_{which}"])
+    found = S[f"found_{which}"]
+    if found:
+        idx = st.selectbox(
+            f"{label} 후보", options=list(range(len(found))),
+            format_func=lambda i: f"{found[i]['name']} · {found[i]['address']} ({found[i]['dist_km']:.1f}km)",
+            key=f"pick_{which}_{S.found_seq}", label_visibility="collapsed",
+        )
+        place = found[idx]
+        st.button(f"이곳을 {label}로", key=f"set_{which}", on_click=set_point,
+                  args=(which, (place["lat"], place["lon"]), place["name"]))
 
 
 @st.cache_data(show_spinner=False)
@@ -86,6 +153,11 @@ def prepare_facilities(routes: list[dict]):
 def cached_gemini(payload_json, api_key, model):
     """같은 계산 결과면 Gemini를 다시 부르지 않는다 (슬라이더를 움직일 때마다 호출 방지)."""
     return explain.call_gemini(payload_json, api_key, model)
+
+
+@st.cache_data(ttl=3600, show_spinner="장소를 찾는 중…")
+def cached_places(keyword, app_key):
+    return sr.search_places(keyword, app_key)
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -125,11 +197,48 @@ expected_route_source = result["route_source"] if result else (
     "tmap" if get_secret("TMAP_APP_KEY") else "demo")
 ui.data_banner(expected_route_source, expected_fac_source)
 
+# 장소 검색 (TMAP 키가 있을 때)
+if get_secret("TMAP_APP_KEY"):
+    with st.container(border=True):
+        col_s, col_e = st.columns(2)
+        with col_s:
+            place_picker("start", "출발지", texts.SEARCH_START_PLACEHOLDER)
+            if get_geolocation is not None:
+                st.button(texts.MY_LOCATION_BUTTON, on_click=start_locating)
+        with col_e:
+            place_picker("end", "도착지", texts.SEARCH_END_PLACEHOLDER)
+
+# '현재 위치를 출발지로': 브라우저가 위치를 알려줄 때까지 기다린다
+if S.locating and get_geolocation is not None:
+    loc = get_geolocation()
+    if not loc:
+        st.caption(texts.LOCATING_WAIT)
+    elif "error" in loc:
+        code = (loc.get("error") or {}).get("code")
+        S.loc_msg = texts.LOCATION_DENIED if code == 1 else texts.LOCATION_FAILED
+        S.locating = False
+        st.rerun()
+    else:
+        coords = loc.get("coords") or {}
+        lat, lon = coords.get("latitude"), coords.get("longitude")
+        S.locating = False
+        if lat is None or lon is None:
+            S.loc_msg = texts.LOCATION_FAILED
+        else:
+            point = (round(float(lat), 6), round(float(lon), 6))
+            set_point("start", point, texts.MY_LOCATION_NAME)
+            far_km = haversine_m(*config.DEFAULT_CENTER, *point) / 1000
+            if far_km > sr.SEARCH_RADIUS_KM:
+                S.loc_msg = texts.LOCATION_FAR.format(km=far_km)
+        st.rerun()
+if S.loc_msg:
+    st.info(S.loc_msg)
+
 col_guide, col_reset = st.columns([4, 1], vertical_alignment="center")
 with col_guide:
-    ui.pick_status(S.start, S.end)
+    ui.pick_status(S.start, S.end, S.start_name, S.end_name)
 with col_reset:
-    st.button(texts.RESET_BUTTON, on_click=reset, disabled=S.start is None)
+    st.button(texts.RESET_BUTTON, on_click=reset, disabled=S.start is None and S.end is None)
 
 map_slot = st.container()   # 지도는 결과 계산 후 이 자리에 그린다
 legend_slot = st.container()
@@ -219,7 +328,7 @@ if result:
 # ---------------------------------------------------------------- 지도 (위에 비워 둔 자리)
 with map_slot:
     fmap = build_map(
-        start=S.start, end=S.end,
+        start=S.start, end=S.end, start_name=S.start_name, end_name=S.end_name,
         routes=result["routes"] if result else None,
         selected_id=selected_id,
         facilities=result["facilities"] if result else None,

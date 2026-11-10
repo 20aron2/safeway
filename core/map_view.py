@@ -4,6 +4,11 @@ from __future__ import annotations
 import folium
 import pandas as pd
 
+try:
+    from folium.plugins import LocateControl
+except ImportError:  # 아주 오래된 folium
+    LocateControl = None
+
 from . import config
 from .explain import fmt_distance
 
@@ -29,7 +34,7 @@ def _facility_icon(kind: str, emphasized: bool) -> folium.DivIcon:
     return folium.DivIcon(html=html, icon_size=(22, 22), icon_anchor=(11, 11), class_name="empty")
 
 
-def build_map(start=None, end=None, routes=None, selected_id=None,
+def build_map(start=None, end=None, start_name=None, end_name=None, routes=None, selected_id=None,
               facilities: pd.DataFrame | None = None, near_ids=(),
               vworld_key: str | None = None) -> folium.Map:
     routes = routes or []
@@ -71,9 +76,18 @@ def build_map(start=None, end=None, routes=None, selected_id=None,
             ).add_to(m)
 
     if start:
-        folium.Marker(start, icon=_pin("출발"), tooltip="출발지").add_to(m)
+        folium.Marker(start, icon=_pin("출발"), tooltip=f"출발: {start_name or '출발지'}").add_to(m)
     if end:
-        folium.Marker(end, icon=_pin("도착"), tooltip="도착지").add_to(m)
+        folium.Marker(end, icon=_pin("도착"), tooltip=f"도착: {end_name or '도착지'}").add_to(m)
+
+    # 내 위치 버튼: 누르면 파란 점으로 현재 위치를 보여주고 움직이면 따라간다.
+    # 브라우저 안에서만 처리되고 서버로 보내지 않는다.
+    if LocateControl is not None:
+        LocateControl(
+            auto_start=False, position="topleft", flyTo=True,
+            strings={"title": "내 위치 보기"},
+            locateOptions={"enableHighAccuracy": True, "maxZoom": 17},
+        ).add_to(m)
 
     if len(points) >= 2:
         lats = [p[0] for p in points]

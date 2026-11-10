@@ -31,6 +31,7 @@ safeway/
 │   ├── texts.py            화면 문구 ← 코딩 몰라도 수정 가능
 │   ├── geo.py              미터 단위 거리 계산
 │   ├── routes.py           경로 후보 만들기 (데모 / TMAP)
+│   ├── search.py           장소 이름 → 좌표 (TMAP 장소 검색, 부산대 반경 10km)
 │   ├── facilities.py       시설 데이터 읽기 (공공데이터 / 데모)
 │   ├── analysis.py         경로 반경 안 시설 수, 밀도, 공백 구간
 │   ├── recommend.py        비교 점수와 추천 (규칙 기반)
@@ -70,6 +71,7 @@ safeway/
 | pandas | 표 데이터 처리 | 지금 |
 | requests | TMAP API 호출 | STEP 4 |
 | google-genai | Gemini 설명 | 지금 |
+| streamlit-js-eval | 브라우저 현재 위치 읽기 ('현재 위치를 출발지로') | 지금 |
 | pytest | 자동 테스트 (개발용) | 지금 |
 
 거리 계산은 외부 패키지 없이 `geo.py`에서 직접 해요 (하버사인 공식 + 지점 기준 평면 투영). 도보 경로 수준(수 km)에서 오차는 수 cm예요. 원래 계획의 Shapely·GeoPandas는 설치가 무겁고 이 규모에선 필요 없어서 뺐어요.
@@ -98,5 +100,6 @@ safeway/
 | STEP 2 | 데모 앱: 지도 클릭, 가상 경로·시설, 분석, 카드, 추천, 기본 설명 | 완료 |
 | STEP 3 | 공공데이터 정리 스크립트(`scripts/build_facilities.py`) → `data/processed/facilities_geumjeong.csv` | 완료 (CCTV 320곳, 비상벨 32곳) |
 | STEP 4 | TMAP 보행자 경로 (`routes.fetch_tmap_routes`, 최단·추천·대로우선 3가지) | 완료 (실제 키로 동작 확인) |
-| STEP 5 | Gemini 설명 (`explain.get_ai_explanation`): 계산 결과만 전달, 지어낸 숫자가 있으면 기본 설명으로 대체 | 코드 완료, 실제 키로 확인 필요 |
+| STEP 5 | Gemini 설명 (`explain.get_ai_explanation`): 계산 결과만 전달, 지어낸 숫자가 있으면 기본 설명으로 대체 | 완료 (배포 앱에서 동작 확인) |
+| 추가 | 장소 검색, 현재 위치, 지도 위 내 위치 표시 | 코드 완료, 실제 폰에서 확인 필요 |
 | STEP 6 | 배포(Streamlit Cloud), 모바일 점검, 발표 준비 | 마지막 |

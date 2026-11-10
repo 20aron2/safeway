@@ -64,7 +64,7 @@ def data_banner(route_source: str, facility_source: str) -> None:
                 unsafe_allow_html=True)
 
 
-def pick_status(start, end) -> None:
+def pick_status(start, end, start_name=None, end_name=None) -> None:
     if start is None:
         guide = texts.PICK_GUIDE_START
     elif end is None:
@@ -72,11 +72,13 @@ def pick_status(start, end) -> None:
     else:
         guide = texts.PICK_GUIDE_READY
     st.markdown(guide)
-    chips = (
-        f'<span class="sw-chip{" on" if start else ""}">출발 {"✓" if start else "미지정"}</span>'
-        f'<span class="sw-chip{" on" if end else ""}">도착 {"✓" if end else "미지정"}</span>'
-    )
-    st.markdown(f'<div class="sw-chips">{chips}</div>', unsafe_allow_html=True)
+
+    def chip(label, point, name):
+        text = f"{label} · {escape(name or '지정됨')}" if point else f"{label} 미지정"
+        return f'<span class="sw-chip{" on" if point else ""}">{text}</span>'
+
+    st.markdown(f'<div class="sw-chips">{chip("출발", start, start_name)}{chip("도착", end, end_name)}</div>',
+                unsafe_allow_html=True)
 
 
 def legend(radius_m: float | None) -> None:
