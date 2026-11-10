@@ -37,7 +37,7 @@ def test_parse_prefers_entrance_and_drops_bad_rows():
     assert station["address"] == "부산 금정구 중앙대로 지하1763"
     assert (univ["lat"], univ["lon"]) == (35.233, 129.079)          # 중심 좌표로 대체
     assert univ["address"] == "부산 금정구 장전동"
-    assert 0 < station["dist_km"] < 1
+    assert 0 < station["dist_km"] < 10   # 부산시청 기준 거리
 
 
 def test_parse_single_result_dict_and_empty():
@@ -58,7 +58,7 @@ def test_search_request_shape(monkeypatch):
     assert len(out) == 2
     assert seen["headers"]["appKey"] == "KEY"
     p = seen["params"]
-    assert p["searchKeyword"] == "부산대역" and p["searchtypCd"] == "R" and p["radius"] == "10"
+    assert p["searchKeyword"] == "부산대역" and p["searchtypCd"] == "R" and p["radius"] == "30"
     assert p["resCoordType"] == "WGS84GEO"
 
 

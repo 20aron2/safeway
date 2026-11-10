@@ -229,3 +229,16 @@ def test_lights_counted_separately_and_scored():
     assert sc["recommended_id"] == "B"   # CCTV 같으면 보안등이 많은 쪽
     rows = {r["route_id"]: r for r in sc["rows"]}
     assert rows["A"]["fac_score"] == pytest.approx(0.5 + 0.5 * 10 / 30)
+
+
+def test_coverage_and_outside_ratio():
+    from core.facilities import coverage_cells
+    route = _straight_route(400)
+    inside = _facility_df([("c1", "cctv", PNU)])
+    cov = coverage_cells(inside)
+    assert analysis.outside_ratio(route["coords"], cov) == 0.0
+    far = _facility_df([("c9", "cctv", offset_point(*PNU, 0, 5000))])   # 5km 북쪽에만 데이터
+    assert analysis.outside_ratio(route["coords"], coverage_cells(far)) == 1.0
+    assert analysis.outside_ratio(route["coords"], None) == 0.0         # 범위 정보 없음 → 경고 안 함
+    m = analysis.analyze_route(route, inside, 50, coverage=coverage_cells(far))
+    assert m["outside_ratio"] == 1.0

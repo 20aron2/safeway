@@ -5,6 +5,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # 지도 시작 위치: 부산 금정구 부산대학교 정문 부근
 DEFAULT_CENTER = (35.2316, 129.0846)
+# 시설 데이터 범위: 부산광역시 전체. 장소 검색은 부산시청 기준 반경 안에서 한다.
+DATA_REGION = "부산"
+REGION_CENTER = (35.1796, 129.0756)
+REGION_RADIUS_KM = 30
 DEFAULT_ZOOM = 16  # 도보 경로가 잘 보이는 확대 수준
 MAP_HEIGHT_PX = 460
 # 기본 지도: "tmap"(TMAP 웹 지도, TMAP 키 필요) 또는 "vworld"(브이월드, 키 없으면 OpenStreetMap)
@@ -40,8 +44,11 @@ GAP_SAMPLE_STEP_M = 10
 GAP_DRAW_MIN_M = 100
 
 # 실제 공공데이터 정리 파일 (STEP 3에서 생성). 이 파일이 있으면 시설은 실제 데이터를 쓴다.
-PUBLIC_FACILITIES_PATH = PROJECT_ROOT / "data" / "processed" / "facilities_geumjeong.csv"
+PUBLIC_FACILITIES_PATH = PROJECT_ROOT / "data" / "processed" / "facilities_busan.csv"
 
 # Gemini 설명 모델. 무료 티어에서 쓸 수 있는 가벼운 모델.
 # 모델 이름이 바뀌어 오류가 나면 여기만 고치면 된다 (예: "gemini-3.5-flash").
 GEMINI_MODEL = "gemini-3.1-flash-lite"
+
+# 경로의 이 비율 이상이 시설 데이터 범위 밖이면 경고한다
+COVERAGE_WARN_RATIO = 0.1

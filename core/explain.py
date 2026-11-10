@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import re
 
+COVERAGE_WARN_RATIO = 0.1  # config와 같은 값 (순환 import를 피하려고 따로 둔다)
+
 
 def fmt_distance(m: float) -> str:
     m = abs(m)
@@ -85,6 +87,10 @@ def build_basic_explanation(scored: dict, radius_m: float, facilities_are_demo: 
     if any(r.get("light_per_km") for r in rows):
         lights = ", ".join(f"{r['route_id']} {r['light_per_km']:.1f}곳" for r in rows)
         lines.append(f"1km당 보안등: {lights}.")
+    outside = [r for r in rows if r.get("outside_ratio", 0) >= COVERAGE_WARN_RATIO]
+    if outside:
+        parts = ", ".join(f"경로 {r['route_id']}의 {r['outside_ratio'] * 100:.0f}%" for r in outside)
+        lines.append(f"⚠️ {parts}는 시설 데이터가 없는 지역이에요. 그 구간의 시설 수는 실제보다 적게 나올 수 있어요.")
     gaps = ", ".join(f"{r['route_id']} {fmt_distance(r['longest_gap_m'])}" for r in rows)
     lines.append(f"반경 안에 CCTV·비상벨이 하나도 없는 가장 긴 구간: {gaps}.")
     return "\n\n".join(lines)
@@ -100,7 +106,9 @@ AI_SYSTEM = (
     "(3) '안전하다', '위험하다'고 단정하지 말고 '등록된 시설이 더 많다'처럼 사실만 말해. "
     "(4) 마지막 문장은 공공데이터가 실제 작동 여부나 현장 상황을 알려주지 않는다는 짧은 주의로 끝내. "
     "(5) 제목, 목록, 표 없이 문단 하나로 써. "
-    "(6) '~해요', '~예요'처럼 부드러운 해요체로 써."
+    "(6) '~해요', '~예요'처럼 부드러운 해요체로 써. "
+    "(7) 한 문장에서 경로의 숫자를 말할 때는 그 숫자가 속한 경로 이름을 같은 문장에 꼭 써. "
+    "(8) 시설데이터_없는지역_비율이 있는 경로는, 그 경로의 시설 수가 실제보다 적게 나올 수 있다고 알려 줘."
 )
 
 
@@ -128,6 +136,8 @@ def build_ai_payload(scored: dict, routes: list[dict], radius_m: float,
             **({"반경안_보안등": f"{r['light']}곳", "1km당_보안등": f"{r['light_per_km']:.1f}곳"}
                if r.get("light_per_km") else {}),
             "비교점수": f"{r['score']:.0f}점",
+            **({"시설데이터_없는지역_비율": f"{r['outside_ratio'] * 100:.0f}%"}
+               if r.get("outside_ratio", 0) >= COVERAGE_WARN_RATIO else {}),
         })
     return {
         "추천경로": scored["recommended_id"],
@@ -146,12 +156,52 @@ def numbers_in(text: str) -> set[str]:
     return set(_NUMBER.findall(text))
 
 
+_ROUTE_REF = re.compile(r"경로\s*([A-Z])")
+_PERCENT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+
+
+def percents_in(text: str) -> set[str]:
+    return set(_PERCENT.findall(text))
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+|\n+")
+
+
 def ai_text_is_grounded(ai_text: str, payload_json: str) -> bool:
-    """AI 문장의 모든 숫자가 보낸 계산 결과 안에 있는지 확인한다 (지어낸 숫자 차단)."""
-    if "%" in ai_text:  # 비율은 보내지 않으므로, 비율이 나오면 AI가 만든 숫자다
+    """AI 문장의 숫자가 보낸 계산 결과에서 왔는지 확인한다 (지어낸 숫자·잘못 붙인 숫자 차단).
+
+    1) 모든 숫자는 보낸 데이터 안에 있어야 한다.
+    2) 문장이 특정 경로(예: '경로 B')를 말하면, 그 문장의 숫자는 그 경로의 값이나
+       공통 값(분석 반경 등)이어야 한다. 경로 A의 숫자를 경로 B에 붙이면 걸린다.
+    """
+    if "%" in ai_text and "%" not in payload_json:  # 보내지 않은 비율을 만들어 냈다
         return False
-    allowed = numbers_in(payload_json) | {"112"}
-    return numbers_in(ai_text) <= allowed
+    try:
+        payload = json.loads(payload_json)
+    except ValueError:
+        return False
+    routes = payload.get("경로들") or []
+    common = {k: v for k, v in payload.items() if k != "경로들"}
+    common_text = json.dumps(common, ensure_ascii=False)
+    route_text = {r.get("경로"): json.dumps(r, ensure_ascii=False) for r in routes}
+    common_nums = numbers_in(common_text) | {"112"}
+    per_route = {rid: numbers_in(t) for rid, t in route_text.items()}
+    # 비율(%)은 비율끼리만 맞춘다. '35%'가 '약 35분'의 35로 통과하지 않게.
+    common_pct = percents_in(common_text)
+    per_route_pct = {rid: percents_in(t) for rid, t in route_text.items()}
+    all_nums = common_nums.union(*per_route.values())
+    all_pct = common_pct.union(*per_route_pct.values())
+
+    if not numbers_in(ai_text) <= all_nums or not percents_in(ai_text) <= all_pct:
+        return False
+    for sentence in _SENTENCE_END.split(ai_text):
+        nums, pcts = numbers_in(sentence), percents_in(sentence)
+        named = [rid for rid in _ROUTE_REF.findall(sentence) if rid in per_route]
+        if not (nums or pcts) or not named:
+            continue
+        allowed = common_nums.union(*(per_route[rid] for rid in named))
+        allowed_pct = common_pct.union(*(per_route_pct[rid] for rid in named))
+        if not nums <= allowed or not pcts <= allowed_pct:
+            return False
+    return True
 
 
 def call_gemini(payload_json: str, api_key: str, model: str) -> str:

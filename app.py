@@ -129,7 +129,7 @@ def place_picker(which: str, label: str, placeholder: str) -> None:
     if found:
         idx = st.selectbox(
             f"{label} 후보", options=list(range(len(found))),
-            format_func=lambda i: f"{found[i]['name']} · {found[i]['address']} ({found[i]['dist_km']:.1f}km)",
+            format_func=lambda i: f"{found[i]['name']} · {found[i]['address']}",
             key=f"pick_{which}_{S.found_seq}", label_visibility="collapsed",
         )
         place = found[idx]
@@ -142,18 +142,24 @@ def load_public(path_str: str, modified: float):
     return fac.load_public_facilities(config.PUBLIC_FACILITIES_PATH)
 
 
+@st.cache_data(show_spinner=False)
+def load_coverage(path_str: str, modified: float):
+    return fac.coverage_cells(load_public(path_str, modified))
+
+
 def prepare_facilities(routes: list[dict]):
     """실제 공공데이터 파일이 있으면 그것을, 없으면 가상 시설을 쓴다."""
     S.data_warning = None
     path = config.PUBLIC_FACILITIES_PATH
     if path.exists():
         try:
-            df = load_public(str(path), path.stat().st_mtime)
+            mtime = path.stat().st_mtime
+            df = load_public(str(path), mtime)
             coords = [c for r in routes for c in r["coords"]]
-            return "public", fac.filter_bbox(df, bbox(coords, margin_m=150))
+            return "public", fac.filter_bbox(df, bbox(coords, margin_m=150)), load_coverage(str(path), mtime)
         except Exception as e:  # 파일 형식 문제 → 데모로 대체하고 알려준다
             S.data_warning = f"공공데이터 파일을 읽지 못해 가상 시설로 대신했어요: {e}"
-    return "demo", fac.make_demo_facilities(routes, S.start)
+    return "demo", fac.make_demo_facilities(routes, S.start), None
 
 
 @st.cache_data(ttl=86400, show_spinner="AI 설명을 만드는 중…")
@@ -187,7 +193,7 @@ def run_search() -> None:
     except rt.RouteError as e:
         S.result, S.error = None, str(e)
         return
-    facility_source, facilities = prepare_facilities(routes)
+    facility_source, facilities, coverage = prepare_facilities(routes)
     police = []
     if tmap_key:  # 지구대·파출소는 참고 정보라 실패해도 경로 비교는 계속한다
         mid = ((S.start[0] + S.end[0]) / 2, (S.start[1] + S.end[1]) / 2)
@@ -200,6 +206,7 @@ def run_search() -> None:
         "facilities": facilities,
         "route_source": route_source,
         "facility_source": facility_source,
+        "coverage": coverage,
         "police": police,
     }
     S.error = None
@@ -251,7 +258,14 @@ expected_fac_source = result["facility_source"] if result else (
     "public" if config.PUBLIC_FACILITIES_PATH.exists() else "demo")
 expected_route_source = result["route_source"] if result else (
     "tmap" if get_secret("TMAP_APP_KEY") else "demo")
-ui.data_banner(expected_route_source, expected_fac_source)
+fac_counts = None
+if expected_fac_source == "public":
+    try:
+        _p = config.PUBLIC_FACILITIES_PATH
+        fac_counts = load_public(str(_p), _p.stat().st_mtime)["kind"].value_counts().to_dict()
+    except Exception:
+        fac_counts = None
+ui.data_banner(expected_route_source, expected_fac_source, fac_counts)
 
 # 장소 검색 (TMAP 키가 있을 때)
 if get_secret("TMAP_APP_KEY"):
@@ -283,8 +297,8 @@ if S.locating and get_geolocation is not None:
         else:
             point = (round(float(lat), 6), round(float(lon), 6))
             set_point("start", point, texts.MY_LOCATION_NAME)
-            far_km = haversine_m(*config.DEFAULT_CENTER, *point) / 1000
-            if far_km > sr.SEARCH_RADIUS_KM:
+            far_km = haversine_m(*config.REGION_CENTER, *point) / 1000
+            if far_km > config.REGION_RADIUS_KM:
                 S.loc_msg = texts.LOCATION_FAR.format(km=far_km)
         st.rerun()
 if S.loc_msg:
@@ -336,7 +350,8 @@ if result:
 
     memo_key = (S.search_id, radius)
     if S.get("metrics_key") != memo_key:  # 같은 탐색·반경이면 다시 계산하지 않는다
-        S.metrics = [analysis.analyze_route(r, result["facilities"], radius) for r in routes]
+        S.metrics = [analysis.analyze_route(r, result["facilities"], radius, result.get("coverage"))
+                     for r in routes]
         S.metrics_key = memo_key
     metrics = S.metrics
     scored = recommend.score_routes(metrics, mode)
@@ -426,11 +441,17 @@ with map_slot:
             night = st.toggle("🌙 야간 지도", key="night",
                               on_change=lambda: S.update(night_touched=True))
 
+    map_facilities = None
+    if result:
+        # 보안등은 수가 많아, 어느 경로든 반경 안에 든 것만 지도에 그린다 (휴대폰에서도 가볍게)
+        df_all = result["facilities"]
+        near_any = set().union(*(m["near_ids"] for m in S.get("metrics") or []))
+        map_facilities = df_all[(df_all["kind"] != "light") | df_all["id"].astype(str).isin(near_any)]
     map_parts = dict(
         start=S.start, end=S.end, start_name=S.start_name, end_name=S.end_name,
         routes=result["routes"] if result else None,
         selected_id=selected_id,
-        facilities=result["facilities"] if result else None,
+        facilities=map_facilities,
         near_ids=near_ids,
         gap_segments=gap_segments,
         police=police,

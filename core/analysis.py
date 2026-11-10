@@ -20,24 +20,70 @@ analyze_route()는 경로 하나와 시설 표를 받아 아래 결과를 돌려
 """
 from __future__ import annotations
 
+import math
+
+import numpy as np
 import pandas as pd
 
 from . import config
-from .facilities import filter_bbox
-from .geo import bbox, densify, haversine_m, point_to_polyline_m
+from .facilities import cell_of, filter_bbox
+from .geo import EARTH_RADIUS_M, bbox, densify, haversine_m, point_to_polyline_m
 
 
-def analyze_route(route: dict, facilities: pd.DataFrame, radius_m: float) -> dict:
+def _xy(lats, lons, lat0: float, lon0: float):
+    """위경도를 (lat0, lon0) 기준 평면 좌표(m)로. 수 km 안에서는 오차가 수 cm 수준."""
+    lats, lons = np.asarray(lats, dtype=float), np.asarray(lons, dtype=float)
+    x = np.radians(lons - lon0) * EARTH_RADIUS_M * math.cos(math.radians(lat0))
+    y = np.radians(lats - lat0) * EARTH_RADIUS_M
+    return x, y
+
+
+def distances_to_route(lats, lons, coords) -> np.ndarray:
+    """여러 지점에서 경로(선)까지의 최단 거리(m)를 한 번에 계산한다."""
+    lats = np.asarray(lats, dtype=float)
+    if len(lats) == 0:
+        return np.zeros(0)
+    c = np.asarray(coords, dtype=float)
+    lat0, lon0 = float(c[:, 0].mean()), float(c[:, 1].mean())
+    px, py = _xy(lats, lons, lat0, lon0)
+    cx, cy = _xy(c[:, 0], c[:, 1], lat0, lon0)
+    if len(c) == 1:
+        return np.hypot(px - cx[0], py - cy[0])
+    ax, ay, bx, by = cx[:-1], cy[:-1], cx[1:], cy[1:]
+    dx, dy = bx - ax, by - ay
+    seg2 = dx * dx + dy * dy
+    seg2 = np.where(seg2 == 0, 1e-12, seg2)
+    best = np.full(len(px), np.inf)
+    chunk = max(1, 2_000_000 // len(ax))  # 메모리를 아끼려고 나눠서 계산
+    for i in range(0, len(px), chunk):
+        qx, qy = px[i:i + chunk, None], py[i:i + chunk, None]
+        t = np.clip(((qx - ax) * dx + (qy - ay) * dy) / seg2, 0.0, 1.0)
+        d = np.hypot(qx - (ax + t * dx), qy - (ay + t * dy)).min(axis=1)
+        best[i:i + chunk] = d
+    return best
+
+
+def outside_ratio(coords, coverage, step_m: float = 20.0) -> float:
+    """경로 중 시설 데이터 범위 밖에 있는 비율 (0~1). 범위 정보가 없으면 0."""
+    if not coverage:
+        return 0.0
+    pts = densify(coords, step_m)
+    return sum(1 for p in pts if cell_of(p[0], p[1]) not in coverage) / len(pts)
+
+
+def analyze_route(route: dict, facilities: pd.DataFrame, radius_m: float,
+                  coverage: frozenset | None = None) -> dict:
     coords = route["coords"]
 
     # 1차: 경로를 감싼 사각형(+반경) 안의 시설만 후보로
     cand = filter_bbox(facilities, bbox(coords, margin_m=radius_m)) if len(facilities) else facilities
 
-    # 2차: 경로까지 실제 거리(m)가 반경 이내인 시설
-    near_rows = []
-    for row in cand.itertuples(index=False):
-        if point_to_polyline_m(row.lat, row.lon, coords) <= radius_m:
-            near_rows.append(row)
+    # 2차: 경로까지 실제 거리(m)가 반경 이내인 시설 (numpy로 한 번에 계산)
+    if len(cand):
+        dist = distances_to_route(cand["lat"].to_numpy(), cand["lon"].to_numpy(), coords)
+        near_rows = list(cand[dist <= radius_m].itertuples(index=False))
+    else:
+        near_rows = []
 
     # 같은 시설 id는 한 번만 센다
     seen: dict[str, object] = {}
@@ -69,6 +115,8 @@ def analyze_route(route: dict, facilities: pd.DataFrame, radius_m: float) -> dic
         "gap_segments": [{"length_m": length, "coords": seg} for length, seg in gaps
                          if length >= config.GAP_DRAW_MIN_M],
         "near_ids": list(seen.keys()),
+        # 시설 데이터가 없는 지역을 지나는 비율. 높으면 시설 수가 실제보다 적게 나온다.
+        "outside_ratio": outside_ratio(coords, coverage),
     }
 
 
@@ -76,10 +124,15 @@ def gap_runs(coords, near_facilities, radius_m: float,
              step_m: float = config.GAP_SAMPLE_STEP_M) -> list[tuple[float, list]]:
     """반경 안에 시설이 하나도 없는 연속 구간들을 (길이 m, 좌표 목록)으로 돌려준다."""
     samples = densify(coords, step_m)
-    covered = [
-        any(haversine_m(p[0], p[1], f.lat, f.lon) <= radius_m for f in near_facilities)
-        for p in samples
-    ]
+    if near_facilities:
+        s = np.asarray(samples, dtype=float)
+        lat0, lon0 = float(s[:, 0].mean()), float(s[:, 1].mean())
+        sx, sy = _xy(s[:, 0], s[:, 1], lat0, lon0)
+        fx, fy = _xy([f.lat for f in near_facilities], [f.lon for f in near_facilities], lat0, lon0)
+        d2 = (sx[:, None] - fx[None, :]) ** 2 + (sy[:, None] - fy[None, :]) ** 2
+        covered = list((d2 <= radius_m * radius_m).any(axis=1))
+    else:
+        covered = [False] * len(samples)
     runs: list[tuple[float, list]] = []
     length, seg = 0.0, []
     for i in range(1, len(samples)):

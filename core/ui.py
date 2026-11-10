@@ -5,7 +5,7 @@ from html import escape
 
 import streamlit as st
 
-from . import texts
+from . import config, texts
 from .explain import fmt_distance, fmt_duration
 
 CSS = """
@@ -34,6 +34,7 @@ CSS = """
 .sw-grid {display:grid; grid-template-columns:1fr 1fr; gap:.5rem .8rem;}
 .sw-k {color:#6B7280; font-size:.74rem;}
 .sw-v {font-weight:600; font-size:1rem; color:#111827;}
+.sw-warn {margin-top:.6rem; font-size:.8rem; color:#B45309; background:#FFFBEB; border-radius:8px; padding:.4rem .55rem;}
 .sw-extra {margin-top:.6rem; font-size:.8rem; color:#1D4ED8;}
 .sw-share code {white-space:normal;}
 .sw-score {margin-top:.65rem; padding-top:.5rem; border-top:1px solid #F3F4F6; font-size:.8rem; color:#374151;}
@@ -56,9 +57,14 @@ def header() -> None:
     )
 
 
-def data_banner(route_source: str, facility_source: str) -> None:
+def data_banner(route_source: str, facility_source: str, counts: dict | None = None) -> None:
     route_note = texts.DEMO_ROUTE_NOTE if route_source == "demo" else texts.REAL_ROUTE_NOTE
-    fac_note = texts.DEMO_FACILITY_NOTE if facility_source == "demo" else texts.REAL_FACILITY_NOTE
+    if facility_source == "demo":
+        fac_note = texts.DEMO_FACILITY_NOTE
+    else:
+        c = counts or {}
+        fac_note = texts.REAL_FACILITY_NOTE.format(
+            cctv=c.get("cctv", 0), bell=c.get("bell", 0), light=c.get("light", 0))
     is_demo = route_source == "demo" or facility_source == "demo"
     title = f"<b>⚠️ {texts.DEMO_BANNER_TITLE}</b><br>" if is_demo else "<b>실제 데이터 모드</b><br>"
     css_class = "sw-banner" if is_demo else "sw-banner real"
@@ -118,6 +124,9 @@ def route_card(row: dict, route: dict, color: str, recommended: bool, selected: 
         f'<div class="sw-card-head"><span>경로 {row["route_id"]}</span>{badge}</div>'
         f'<div class="sw-label">{escape(route["label"])}</div>'
         f'<div class="sw-grid">{grid}</div>'
+        + (f'<div class="sw-warn">⚠️ 경로의 {row["outside_ratio"] * 100:.0f}%가 시설 데이터가 없는 지역이라 '
+           f'시설 수가 실제보다 적게 나올 수 있어요</div>'
+           if row.get("outside_ratio", 0) >= config.COVERAGE_WARN_RATIO else "")
         + (f'<div class="sw-extra">🚓 가까운 지구대·파출소: {escape(nearest_police["name"])} '
            f'· 경로에서 {fmt_distance(nearest_police["dist_m"])}</div>' if nearest_police else "")
         + f'<div class="sw-score">비교 점수 <b>{row["score"]:.0f}</b> / 100</div>'

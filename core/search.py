@@ -4,7 +4,7 @@ search_places("부산대역", app_key) →
     [{"name": "부산대역 1호선", "address": "부산 금정구 ...", "lat": 35.23, "lon": 129.08,
       "dist_km": 0.4}, ...]
 
-금정구 공공데이터만 있으므로, 부산대 부근에서 가까운 순서로 10km 안에서만 찾는다.
+시설 데이터가 부산만 있으므로, 부산시청 기준 30km 안(부산 전역)에서 찾는다.
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from . import config
 from .geo import haversine_m
 
 POI_URL = "https://apis.openapi.sk.com/tmap/pois"
-SEARCH_RADIUS_KM = 10
+SEARCH_RADIUS_KM = config.REGION_RADIUS_KM
 MAX_RESULTS = 15
 
 
@@ -38,7 +38,7 @@ def _address(poi: dict) -> str:
     return " ".join(p for p in parts if p)
 
 
-def parse_poi_response(data: dict, center=config.DEFAULT_CENTER) -> list[dict]:
+def parse_poi_response(data: dict, center=config.REGION_CENTER) -> list[dict]:
     """TMAP 검색 응답에서 이름·주소·좌표만 꺼낸다. 좌표가 없는 결과는 버린다."""
     pois = (((data or {}).get("searchPoiInfo") or {}).get("pois") or {}).get("poi") or []
     if isinstance(pois, dict):  # 결과가 1개면 배열이 아닐 수 있다
@@ -65,7 +65,7 @@ def parse_poi_response(data: dict, center=config.DEFAULT_CENTER) -> list[dict]:
     return out
 
 
-def search_places(keyword: str, app_key: str, center=config.DEFAULT_CENTER,
+def search_places(keyword: str, app_key: str, center=config.REGION_CENTER,
                   radius_km: int = SEARCH_RADIUS_KM) -> list[dict]:
     import requests
 

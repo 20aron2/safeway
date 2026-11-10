@@ -90,3 +90,29 @@ def test_call_gemini_uses_sdk_correctly(monkeypatch):
     assert seen["key"] == "KEY" and seen["model"] == "gemini-x"
     assert '"추천경로": "B"' in seen["contents"]
     assert "숫자는 JSON에 적힌 값을" in seen["config"].system_instruction
+
+
+def test_grounding_catches_number_on_wrong_route():
+    pj = json.dumps(payload(), ensure_ascii=False)       # A: CCTV 3곳, B: CCTV 4곳
+    assert explain.ai_text_is_grounded("경로 B는 CCTV가 4곳이에요.", pj)
+    assert not explain.ai_text_is_grounded("경로 A는 CCTV가 4곳이에요.", pj)   # B의 숫자를 A에 붙임
+    # 두 경로를 함께 말하는 문장은 둘의 숫자를 모두 쓸 수 있다
+    assert explain.ai_text_is_grounded("경로 B는 경로 A보다 200m 길고 CCTV가 4곳, A는 3곳이에요.", pj)
+    # 경로를 말하지 않는 문장은 보낸 숫자 안에서 자유
+    assert explain.ai_text_is_grounded("분석 반경 50m 안에서 비교했어요.", pj)
+    # 다음 문장에서 다시 경로 A를 말하면 그 문장 기준으로 다시 확인
+    assert not explain.ai_text_is_grounded("경로 B는 2.3km예요. 경로 A는 2.3km예요.", pj)
+
+
+def test_outside_ratio_in_payload_and_percent_allowed():
+    m_a = {**_metric("A", 2100, 3, 0), "outside_ratio": 0.35}
+    m_b = {**_metric("B", 2300, 4, 0, 150), "outside_ratio": 0.0}
+    scored = recommend.score_routes([m_a, m_b], "facility")
+    p = explain.build_ai_payload(scored, ROUTES, 50, "균형", False)
+    assert p["경로들"][0]["시설데이터_없는지역_비율"] == "35%"
+    assert "시설데이터_없는지역_비율" not in p["경로들"][1]
+    pj = json.dumps(p, ensure_ascii=False)
+    assert explain.ai_text_is_grounded("경로 A는 35%가 데이터가 없는 지역이에요.", pj)
+    assert not explain.ai_text_is_grounded("경로 B는 35%가 데이터가 없는 지역이에요.", pj)
+    basic = explain.build_basic_explanation(scored, 50, False)
+    assert "경로 A의 35%는 시설 데이터가 없는 지역" in basic

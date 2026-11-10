@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import math
 import random
 from pathlib import Path
 
@@ -83,3 +84,26 @@ def make_demo_facilities(routes: list[dict], seed_point: LatLon) -> pd.DataFrame
             add(kind, *offset_point(lat, lon, rng.uniform(-30, 30), rng.uniform(-30, 30)))
 
     return pd.DataFrame(rows, columns=COLUMNS)
+
+
+# ---------------------------------------------------------------- 데이터 범위
+# 시설 데이터가 '있는 지역'을 격자 칸으로 나타낸다. 칸 하나는 약 550m × 450m (부산 기준).
+CELL_DEG = 0.005
+
+
+def cell_of(lat: float, lon: float) -> tuple[int, int]:
+    return (math.floor(lat / CELL_DEG), math.floor(lon / CELL_DEG))
+
+
+def coverage_cells(df: pd.DataFrame, grow: int = 1) -> frozenset:
+    """시설이 하나라도 있는 칸과 그 주변 칸(grow칸)을 '데이터 범위'로 본다.
+
+    시설이 드문 공원·하천도 범위 안에 들어오도록 주변 1칸까지 넓힌다.
+    """
+    base = {cell_of(la, lo) for la, lo in zip(df["lat"], df["lon"])}
+    cells = set()
+    for a, b in base:
+        for da in range(-grow, grow + 1):
+            for db in range(-grow, grow + 1):
+                cells.add((a + da, b + db))
+    return frozenset(cells)
