@@ -57,13 +57,13 @@ def build_basic_explanation(scored: dict, radius_m: float, facilities_are_demo: 
         best_density = max(rows, key=lambda r: r["per_km"])
         if best_density["route_id"] == rec["route_id"] or best_density["per_km"] == rec["per_km"]:
             lines.append(
-                f"{basis}시설도 1km당 {rec['per_km']:.1f}곳으로 가장 많은 편이에요 "
+                f"{basis}CCTV·비상벨도 1km당 {rec['per_km']:.1f}곳으로 가장 많은 편이에요 "
                 f"(CCTV {rec['cctv']}곳, 비상벨 {rec['bell']}곳)."
             )
         else:
             extra = best_density["distance_m"] - rec["distance_m"]
             lines.append(
-                f"다만 시설은 **경로 {best_density['route_id']}**가 1km당 {best_density['per_km']:.1f}곳으로 "
+                f"다만 CCTV·비상벨은 **경로 {best_density['route_id']}**가 1km당 {best_density['per_km']:.1f}곳으로 "
                 f"더 많아요 ({fmt_distance(extra)} 더 걸어야 해요). "
                 f"안전시설 접근성을 중요하게 생각한다면 경로 {best_density['route_id']}도 고려해 보세요."
             )
@@ -73,7 +73,7 @@ def build_basic_explanation(scored: dict, radius_m: float, facilities_are_demo: 
         more = _more_phrase(rec, shortest)
         reason = (
             f"{basis}{more}" if more else
-            f"{basis}시설이 1km당 {rec['per_km']:.1f}곳으로 경로 {shortest['route_id']}"
+            f"{basis}CCTV·비상벨이 1km당 {rec['per_km']:.1f}곳으로 경로 {shortest['route_id']}"
             f"({shortest['per_km']:.1f}곳)보다 촘촘해요"
         )
         lines.append(
@@ -82,8 +82,11 @@ def build_basic_explanation(scored: dict, radius_m: float, facilities_are_demo: 
             f"안전시설 접근성을 중요하게 생각한다면 경로 {rec['route_id']}를 고려할 수 있어요."
         )
 
+    if any(r.get("light_per_km") for r in rows):
+        lights = ", ".join(f"{r['route_id']} {r['light_per_km']:.1f}곳" for r in rows)
+        lines.append(f"1km당 보안등: {lights}.")
     gaps = ", ".join(f"{r['route_id']} {fmt_distance(r['longest_gap_m'])}" for r in rows)
-    lines.append(f"반경 안에 시설이 하나도 없는 가장 긴 구간: {gaps}.")
+    lines.append(f"반경 안에 CCTV·비상벨이 하나도 없는 가장 긴 구간: {gaps}.")
     return "\n\n".join(lines)
 
 
@@ -120,15 +123,18 @@ def build_ai_payload(scored: dict, routes: list[dict], radius_m: float,
             "최단경로보다_더걸리는시간": "없음(최단)" if extra_m < 1 else fmt_duration(extra_s),
             "반경안_CCTV": f"{r['cctv']}곳",
             "반경안_비상벨": f"{r['bell']}곳",
-            "1km당_시설": f"{r['per_km']:.1f}곳",
-            "시설없는_최장구간": fmt_distance(r["longest_gap_m"]),
+            "1km당_CCTV와비상벨": f"{r['per_km']:.1f}곳",
+            "CCTV와비상벨이_없는_최장구간": fmt_distance(r["longest_gap_m"]),
+            **({"반경안_보안등": f"{r['light']}곳", "1km당_보안등": f"{r['light_per_km']:.1f}곳"}
+               if r.get("light_per_km") else {}),
             "비교점수": f"{r['score']:.0f}점",
         })
     return {
         "추천경로": scored["recommended_id"],
         "추천기준": mode_label,
         "분석반경": f"{radius_m:.0f}m",
-        "시설데이터": "가상 데이터(실제 위치 아님)" if facilities_are_demo else "구청에 등록된 CCTV·비상벨 (공공데이터포털)",
+        "시설데이터": "가상 데이터(실제 위치 아님)" if facilities_are_demo
+                      else "구청에 등록된 CCTV·비상벨·보안등 (공공데이터포털)",
         "경로들": out,
     }
 

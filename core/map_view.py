@@ -34,9 +34,16 @@ def _facility_icon(kind: str, emphasized: bool) -> folium.DivIcon:
     return folium.DivIcon(html=html, icon_size=(22, 22), icon_anchor=(11, 11), class_name="empty")
 
 
+def _police_icon() -> folium.DivIcon:
+    html = ('<div style="font-size:16px;line-height:24px;width:24px;text-align:center;background:#fff;'
+            'border:2px solid #1D4ED8;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,.35)">🚓</div>')
+    return folium.DivIcon(html=html, icon_size=(28, 28), icon_anchor=(14, 14), class_name="empty")
+
+
 def build_map(start=None, end=None, start_name=None, end_name=None, routes=None, selected_id=None,
               facilities: pd.DataFrame | None = None, near_ids=(),
-              vworld_key: str | None = None) -> folium.Map:
+              vworld_key: str | None = None, gap_segments=(), police=(),
+              night: bool = False) -> folium.Map:
     routes = routes or []
     points = [p for p in (start, end) if p] + [c for r in routes for c in r["coords"]]
     center = points[0] if len(points) == 1 else config.DEFAULT_CENTER
@@ -44,7 +51,7 @@ def build_map(start=None, end=None, start_name=None, end_name=None, routes=None,
     if vworld_key:
         m = folium.Map(location=center, zoom_start=config.DEFAULT_ZOOM,
                        tiles=None, control_scale=True, max_zoom=19)
-        layer = config.VWORLD_LAYER
+        layer = config.VWORLD_NIGHT_LAYER if night else config.VWORLD_LAYER
         ext = "jpeg" if layer == "Satellite" else "png"
         folium.TileLayer(
             tiles=config.VWORLD_URL.format(key=vworld_key, layer=layer, ext=ext),
@@ -65,10 +72,30 @@ def build_map(start=None, end=None, start_name=None, end_name=None, routes=None,
             tooltip=f"경로 {r['id']} · {fmt_distance(r['distance_m'])}",
         ).add_to(m)
 
+    # 선택한 경로에서 반경 안에 시설이 없는 구간: 빨간 점선
+    for gap in gap_segments:
+        folium.PolyLine(
+            gap["coords"], color="#DC2626", weight=5, opacity=0.95, dash_array="2 10",
+            tooltip=f"CCTV·비상벨 없는 구간 {fmt_distance(gap['length_m'])}",
+        ).add_to(m)
+
+    # 지구대·파출소 (참고용, 점수에는 넣지 않음)
+    for p in police:
+        folium.Marker([p["lat"], p["lon"]], icon=_police_icon(),
+                      tooltip=f"🚓 {p['name']}").add_to(m)
+
     # 시설: 선택한 경로 반경 안의 시설은 진하게
     if facilities is not None and len(facilities):
         near = set(near_ids)
-        for row in facilities.itertuples(index=False):
+        # 보안등은 수가 많아 작은 노란 점으로 (선택한 경로 반경 안이면 진하게)
+        for row in facilities[facilities["kind"] == "light"].itertuples(index=False):
+            on = str(row.id) in near
+            folium.CircleMarker(
+                [row.lat, row.lon], radius=3 if on else 2, weight=0,
+                fill=True, fill_color="#EAB308", fill_opacity=0.95 if on else 0.35,
+                tooltip=row.name or "보안등",
+            ).add_to(m)
+        for row in facilities[facilities["kind"] != "light"].itertuples(index=False):
             folium.Marker(
                 [row.lat, row.lon],
                 icon=_facility_icon(row.kind, str(row.id) in near),

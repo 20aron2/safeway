@@ -8,6 +8,8 @@ search_places("부산대역", app_key) →
 """
 from __future__ import annotations
 
+import re
+
 from . import config
 from .geo import haversine_m
 
@@ -63,7 +65,8 @@ def parse_poi_response(data: dict, center=config.DEFAULT_CENTER) -> list[dict]:
     return out
 
 
-def search_places(keyword: str, app_key: str, center=config.DEFAULT_CENTER) -> list[dict]:
+def search_places(keyword: str, app_key: str, center=config.DEFAULT_CENTER,
+                  radius_km: int = SEARCH_RADIUS_KM) -> list[dict]:
     import requests
 
     keyword = (keyword or "").strip()
@@ -72,7 +75,7 @@ def search_places(keyword: str, app_key: str, center=config.DEFAULT_CENTER) -> l
     params = {
         "version": "1", "searchKeyword": keyword, "count": str(MAX_RESULTS),
         "searchtypCd": "R", "centerLat": str(center[0]), "centerLon": str(center[1]),
-        "radius": str(SEARCH_RADIUS_KM),
+        "radius": str(radius_km),
         "reqCoordType": "WGS84GEO", "resCoordType": "WGS84GEO",
     }
     headers = {"appKey": app_key.strip(), "Accept": "application/json"}
@@ -92,3 +95,23 @@ def search_places(keyword: str, app_key: str, center=config.DEFAULT_CENTER) -> l
         return parse_poi_response(resp.json(), center)
     except ValueError:
         raise SearchError("검색 결과를 읽지 못했어요.")
+
+
+POLICE_KEYWORDS = ("지구대", "파출소")
+# 이름이 이 단어로 끝나야 치안시설로 본다 (뒤의 [ ] ( ) 설명은 무시)
+POLICE_NAME = re.compile(r"(지구대|파출소|치안센터|경찰서)\s*([\[(].*[\])])?$")
+
+
+def find_police(center, app_key: str, radius_km: int = 2) -> list[dict]:
+    """경로 주변 지구대·파출소를 TMAP 장소 검색으로 찾는다 (참고용, 점수에는 쓰지 않음)."""
+    found, seen = [], set()
+    for kw in POLICE_KEYWORDS:
+        for p in search_places(kw, app_key, center=center, radius_km=radius_km):
+            # '지구대 앞 식당' 같은 엉뚱한 결과를 거른다
+            if not POLICE_NAME.search(p["name"]):
+                continue
+            key = (round(p["lat"], 4), round(p["lon"], 4))
+            if key not in seen:
+                seen.add(key)
+                found.append(p)
+    return found

@@ -5,6 +5,7 @@
 
 입력:  data/raw/cctv.csv   (행정안전부_CCTV정보, 금정구분)
        data/raw/bell.csv   (행정안전부_안전비상벨위치정보, 금정구분)
+       data/raw/light.csv  (전국보안등정보표준데이터 중 부산광역시 금정구, 없어도 됨)
 출력:  data/processed/facilities_geumjeong.csv   ← 앱이 자동으로 읽는 파일
        data/processed/cleaning_report.md         ← 정리 과정 기록 (발표 자료용)
 
@@ -45,8 +46,10 @@ def read_korean_csv(path: Path) -> pd.DataFrame:
 
 def _coords(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df["lat"] = pd.to_numeric(df["WGS84위도"], errors="coerce").round(6)
-    df["lon"] = pd.to_numeric(df["WGS84경도"], errors="coerce").round(6)
+    lat_col = "WGS84위도" if "WGS84위도" in df else "위도"   # 보안등 파일은 열 이름이 다르다
+    lon_col = "WGS84경도" if "WGS84경도" in df else "경도"
+    df["lat"] = pd.to_numeric(df[lat_col], errors="coerce").round(6)
+    df["lon"] = pd.to_numeric(df[lon_col], errors="coerce").round(6)
     return df
 
 
@@ -57,8 +60,11 @@ def _address(df: pd.DataFrame) -> pd.Series:
 
 
 def clean(df: pd.DataFrame, kind: str, log: list[str]) -> pd.DataFrame:
-    label = "CCTV" if kind == "cctv" else "비상벨"
+    label = {"cctv": "CCTV", "bell": "비상벨", "light": "보안등"}[kind]
     df = _coords(df)
+    if "관리번호" not in df:  # 보안등 파일에는 관리번호가 없어 위치명(없으면 줄 번호)을 쓴다
+        df["관리번호"] = df.get("보안등위치명", pd.Series(index=df.index, dtype=str)).fillna("").where(
+            lambda v: v != "", df.index.astype(str))
     df["address"] = _address(df)
     log.append(f"### {label}\n- 원본: {len(df):,}행")
 
@@ -91,12 +97,18 @@ def clean(df: pd.DataFrame, kind: str, log: list[str]) -> pd.DataFrame:
             per_addr = pd.to_numeric(g["카메라대수"], errors="coerce").fillna(1).groupby(g["address"]).max()
             cams = int(per_addr.sum())
             name = f"CCTV {cams}대 · {addresses[0] if addresses else '주소 없음'}"
+        elif kind == "light":
+            count = int(pd.to_numeric(g["설치개수"], errors="coerce").fillna(1).sum())
+            name = f"보안등 {count}개 · {addresses[0] if addresses else g['관리번호'].iloc[0]}"
         else:
             place = g["설치위치"].dropna().iloc[0] if g["설치위치"].notna().any() else ""
             name = f"비상벨 · {place}" + (f" ({g['설치장소유형'].iloc[0]})" if "설치장소유형" in g else "")
         rows.append({"id": f"{kind}-{g['관리번호'].iloc[0]}", "kind": kind,
                      "lat": lat, "lon": lon, "name": name, "source": "public"})
     out = pd.DataFrame(rows)
+    # 위치명이 겹치는 경우가 있어 id가 중복되면 뒤에 번호를 붙인다
+    dup = out.groupby("id").cumcount()
+    out["id"] = out["id"].where(dup == 0, out["id"] + "-" + dup.astype(str))
     log.append(f"- **최종 설치 지점: {len(out)}곳** (같은 좌표는 1곳으로 합침)")
     if kind == "cctv":
         repeated = (df.groupby(["lat", "lon", "address"]).size() > 1).sum()
@@ -104,18 +116,25 @@ def clean(df: pd.DataFrame, kind: str, log: list[str]) -> pd.DataFrame:
             f"- 참고: {repeated}곳은 같은 주소·같은 카메라 대수가 설치연월과 기준일자만 다르게 "
             "여러 번 등록돼 있어요. 데이터 갱신 때 중복 등록된 것으로 보고 1곳으로 셌어요."
         )
-    else:
+    elif kind == "bell":
         places = df["설치장소유형"].value_counts().to_dict() if "설치장소유형" in df else {}
         log.append(f"- 설치 장소 유형: {places}")
+    else:
+        forms = df["설치형태"].value_counts().to_dict() if "설치형태" in df else {}
+        log.append(f"- 설치 형태: {forms}")
     log.append("")
     return out
 
 
-def main(cctv_path: Path = RAW / "cctv.csv", bell_path: Path = RAW / "bell.csv") -> pd.DataFrame:
+def main(cctv_path: Path = RAW / "cctv.csv", bell_path: Path = RAW / "bell.csv",
+         light_path: Path = RAW / "light.csv") -> pd.DataFrame:
     log = ["# 공공데이터 정리 기록\n"]
     parts = []
-    for path, kind in ((cctv_path, "cctv"), (bell_path, "bell")):
+    for path, kind in ((cctv_path, "cctv"), (bell_path, "bell"), (light_path, "light")):
         if not path.exists():
+            if kind == "light":
+                log.append("_보안등 파일이 없어 보안등은 건너뛰었어요._\n")
+                continue
             sys.exit(f"파일이 없어요: {path}  (data/raw 폴더에 cctv.csv, bell.csv 로 넣어 주세요)")
         raw = read_korean_csv(path)
         if "데이터기준일자" in raw:

@@ -34,6 +34,8 @@ CSS = """
 .sw-grid {display:grid; grid-template-columns:1fr 1fr; gap:.5rem .8rem;}
 .sw-k {color:#6B7280; font-size:.74rem;}
 .sw-v {font-weight:600; font-size:1rem; color:#111827;}
+.sw-extra {margin-top:.6rem; font-size:.8rem; color:#1D4ED8;}
+.sw-share code {white-space:normal;}
 .sw-score {margin-top:.65rem; padding-top:.5rem; border-top:1px solid #F3F4F6; font-size:.8rem; color:#374151;}
 .sw-foot {font-size:.78rem; color:#9CA3AF; line-height:1.6; margin-top:1.2rem;}
 div[data-testid="stButton"] button[data-testid="stBaseButton-primary"] {width:100%;}
@@ -81,13 +83,23 @@ def pick_status(start, end, start_name=None, end_name=None) -> None:
                 unsafe_allow_html=True)
 
 
-def legend(radius_m: float | None) -> None:
-    extra = f" · 진하게 표시된 시설 = 선택한 경로 {radius_m:.0f}m 안" if radius_m else ""
-    st.markdown(f'<div class="sw-legend">📷 CCTV · 🔔 비상벨{extra}</div>', unsafe_allow_html=True)
+def legend(radius_m: float | None, has_police: bool = False, has_gaps: bool = False,
+           has_lights: bool = False) -> None:
+    parts = ["📷 CCTV", "🔔 비상벨"]
+    if has_lights:
+        parts.append('<span style="color:#CA8A04">●</span> 보안등')
+    if has_police:
+        parts.append("🚓 지구대·파출소(참고)")
+    text = " · ".join(parts)
+    if radius_m:
+        text += f" · 진하게 표시된 시설 = 선택한 경로 {radius_m:.0f}m 안"
+    if has_gaps:
+        text += ' · <span style="color:#DC2626">빨간 점선</span> = 반경 안에 CCTV·비상벨이 없는 구간'
+    st.markdown(f'<div class="sw-legend">{text}</div>', unsafe_allow_html=True)
 
 
 def route_card(row: dict, route: dict, color: str, recommended: bool, selected: bool,
-               facilities_are_demo: bool) -> None:
+               facilities_are_demo: bool, nearest_police: dict | None = None) -> None:
     badge = '<span class="sw-badge">추천</span>' if recommended else ""
     prefix = "가상 " if facilities_are_demo else ""
     stats = [
@@ -95,16 +107,20 @@ def route_card(row: dict, route: dict, color: str, recommended: bool, selected: 
         ("예상 시간", fmt_duration(row["duration_s"])),
         (f"📷 {prefix}CCTV", f"{row['cctv']}곳"),
         (f"🔔 {prefix}비상벨", f"{row['bell']}곳"),
-        ("1km당 시설", f"{row['per_km']:.1f}곳"),
-        ("시설 없는 최장 구간", fmt_distance(row["longest_gap_m"])),
+        ("1km당 CCTV·비상벨", f"{row['per_km']:.1f}곳"),
+        ("CCTV·비상벨 없는 최장 구간", fmt_distance(row["longest_gap_m"])),
     ]
+    if row.get("light") or row.get("light_per_km"):
+        stats += [("💡 보안등", f"{row['light']}곳"), ("1km당 보안등", f"{row['light_per_km']:.1f}곳")]
     grid = "".join(f'<div><div class="sw-k">{k}</div><div class="sw-v">{v}</div></div>' for k, v in stats)
     html = (
         f'<div class="sw-card{" sel" if selected else ""}" style="--c:{color}">'
         f'<div class="sw-card-head"><span>경로 {row["route_id"]}</span>{badge}</div>'
         f'<div class="sw-label">{escape(route["label"])}</div>'
         f'<div class="sw-grid">{grid}</div>'
-        f'<div class="sw-score">비교 점수 <b>{row["score"]:.0f}</b> / 100</div>'
+        + (f'<div class="sw-extra">🚓 가까운 지구대·파출소: {escape(nearest_police["name"])} '
+           f'· 경로에서 {fmt_distance(nearest_police["dist_m"])}</div>' if nearest_police else "")
+        + f'<div class="sw-score">비교 점수 <b>{row["score"]:.0f}</b> / 100</div>'
         "</div>"
     )
     st.markdown(html, unsafe_allow_html=True)

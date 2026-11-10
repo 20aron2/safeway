@@ -3,7 +3,7 @@
 시설 데이터는 아래 열을 가진 pandas 표(DataFrame)로 주고받는다.
 
     id      시설 고유번호 (문자)
-    kind    "cctv" 또는 "bell"
+    kind    "cctv", "bell", "light"(보안등)
     lat     위도 (WGS84)
     lon     경도 (WGS84)
     name    표시용 이름/설치 위치
@@ -22,7 +22,7 @@ import pandas as pd
 from .geo import LatLon, bbox, offset_point
 
 COLUMNS = ["id", "kind", "lat", "lon", "name", "source"]
-KINDS = ("cctv", "bell")
+KINDS = ("cctv", "bell", "light")
 
 
 def empty_facilities() -> pd.DataFrame:

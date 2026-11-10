@@ -194,3 +194,38 @@ def test_load_public_facilities_rejects_bad_columns(tmp_path):
     p.write_text("x,y\n1,2\n", encoding="utf-8")
     with pytest.raises(ValueError):
         load_public_facilities(p)
+
+
+def test_gap_segments_for_map():
+    route = _straight_route(400)
+    # 시작점 근처에만 시설 → 끝쪽 약 350m가 비어 있음
+    m = analysis.analyze_route(route, _facility_df([("c1", "cctv", PNU)]), 50)
+    segs = m["gap_segments"]
+    assert len(segs) == 1
+    seg = segs[0]
+    assert seg["length_m"] == pytest.approx(m["longest_gap_m"])
+    assert seg["coords"][-1] == pytest.approx(route["coords"][-1])
+    # 짧은 공백(100m 미만)은 지도에 그리지 않는다
+    short = _straight_route(80)
+    assert analysis.analyze_route(short, _facility_df([]), 50)["gap_segments"] == []
+
+
+def test_lights_counted_separately_and_scored():
+    route = _straight_route(400)
+    df = _facility_df([
+        ("c1", "cctv", offset_point(*PNU, 50, 10)),
+        ("l1", "light", offset_point(*PNU, 150, 10)),
+        ("l2", "light", offset_point(*PNU, 300, -10)),
+    ])
+    m = analysis.analyze_route(route, df, 50)
+    assert (m["cctv"], m["light"], m["total"]) == (1, 2, 1)   # 보안등은 total에 넣지 않음
+    assert m["light_per_km"] == pytest.approx(5.0, rel=1e-3)
+    # 공백 구간은 CCTV·비상벨 기준 → 보안등이 있어도 끝쪽은 공백
+    assert m["longest_gap_m"] > 250
+
+    a = {**_metric("A", 1000, 2, 0), "light": 10, "light_per_km": 10.0}
+    b = {**_metric("B", 1000, 2, 0), "light": 30, "light_per_km": 30.0}
+    sc = recommend.score_routes([a, b], "facility")
+    assert sc["recommended_id"] == "B"   # CCTV 같으면 보안등이 많은 쪽
+    rows = {r["route_id"]: r for r in sc["rows"]}
+    assert rows["A"]["fac_score"] == pytest.approx(0.5 + 0.5 * 10 / 30)

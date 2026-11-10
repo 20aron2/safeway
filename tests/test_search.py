@@ -77,3 +77,21 @@ def test_search_errors(monkeypatch, status, msg):
 def test_short_keyword_rejected():
     with pytest.raises(sr.SearchError, match="두 글자"):
         sr.search_places("a", "K")
+
+
+def test_find_police_filters_and_dedupes(monkeypatch):
+    payload = {"searchPoiInfo": {"pois": {"poi": [
+        {"name": "부산금정경찰서 장전지구대", "noorLat": "35.2350", "noorLon": "129.0870"},
+        {"name": "지구대 앞 식당", "noorLat": "35.2351", "noorLon": "129.0871"},
+        {"name": "부곡치안센터[부산]", "noorLat": "35.2400", "noorLon": "129.0900"},
+    ]}}}
+    calls = []
+
+    def fake_get(url, params, headers, timeout):
+        calls.append((params["searchKeyword"], params["radius"]))
+        return FakeResp(200, payload)
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    found = sr.find_police((35.23, 129.08), "K")
+    assert [p["name"] for p in found] == ["부산금정경찰서 장전지구대", "부곡치안센터[부산]"]  # 중복·식당 제외
+    assert calls == [("지구대", "2"), ("파출소", "2")]

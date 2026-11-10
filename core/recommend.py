@@ -3,7 +3,8 @@
 계산 공식 (경로끼리 비교한 상대 점수, 0~100):
 
     거리 점수   = 가장 짧은 경로 거리 ÷ 이 경로 거리          (가장 짧으면 1)
-    시설 점수   = 이 경로의 1km당 시설 수 ÷ 가장 높은 1km당 시설 수 (가장 높으면 1)
+    시설 점수   = 0.5 × (1km당 CCTV·비상벨 ÷ 가장 높은 값) + 0.5 × (1km당 보안등 ÷ 가장 높은 값)
+                  (보안등 데이터가 없으면 CCTV·비상벨만 사용)
     비교 점수   = 100 × (거리 가중치 × 거리 점수 + 시설 가중치 × 시설 점수)
 
 가중치는 팀이 정한 임의의 값이며, 과학적으로 검증된 안전도 지표가 아니다.
@@ -25,11 +26,16 @@ def score_routes(metrics: list[dict], mode: str = DEFAULT_MODE) -> dict:
     weights = MODES[mode]
     min_dist = min(m["distance_m"] for m in metrics)
     max_density = max(m["per_km"] for m in metrics)
+    max_light = max(m.get("light_per_km", 0.0) for m in metrics)
 
     rows = []
     for m in metrics:
         dist_score = min_dist / m["distance_m"] if m["distance_m"] > 0 else 0.0
-        fac_score = m["per_km"] / max_density if max_density > 0 else 0.0
+        cb_score = m["per_km"] / max_density if max_density > 0 else 0.0
+        if max_light > 0:  # 보안등 데이터가 있으면 CCTV·비상벨과 보안등을 반씩
+            fac_score = 0.5 * cb_score + 0.5 * m.get("light_per_km", 0.0) / max_light
+        else:
+            fac_score = cb_score
         score = 100 * (weights["w_dist"] * dist_score + weights["w_fac"] * fac_score)
         rows.append({**m, "dist_score": dist_score, "fac_score": fac_score, "score": round(score, 1)})
 
@@ -43,7 +49,9 @@ def formula_markdown(mode: str) -> str:
     return (
         "**비교 점수 계산 방법** (경로끼리 비교한 상대 점수)\n\n"
         "- 거리 점수 = 가장 짧은 경로 거리 ÷ 이 경로 거리\n"
-        "- 시설 점수 = 이 경로의 1km당 시설 수 ÷ 가장 높은 1km당 시설 수\n"
+        "- 시설 점수 = 0.5 × (1km당 CCTV·비상벨 ÷ 경로 중 가장 높은 값) "
+        "+ 0.5 × (1km당 보안등 ÷ 경로 중 가장 높은 값)  \n"
+        "  (보안등 데이터가 없으면 CCTV·비상벨만 써요)\n"
         f"- 비교 점수 = 100 × ({w['w_dist']} × 거리 점수 + {w['w_fac']} × 시설 점수)  "
         f"← 현재 기준: **{w['label']}**\n\n"
         "가중치는 팀이 정한 임의의 값이에요. 과학적으로 검증된 안전도가 아니며, "

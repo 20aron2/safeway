@@ -12,6 +12,8 @@ MAP_TILES = "OpenStreetMap"  # 브이월드 키가 없을 때 쓰는 기본 지�
 # 브이월드(국토교통부) 배경지도. .streamlit/secrets.toml 에 VWORLD_API_KEY 가 있으면 사용.
 # 레이어 선택: "Base"(일반 지도), "gray"(회색 지도), "midnight"(야간 지도), "Satellite"(위성)
 VWORLD_LAYER = "Base"
+VWORLD_NIGHT_LAYER = "midnight"  # 야간 지도
+NIGHT_HOURS = (19, 6)            # 한국 시간 19시~다음 날 6시는 처음부터 야간 지도
 VWORLD_URL = "https://api.vworld.kr/req/wmts/1.0.0/{key}/{layer}/{{z}}/{{y}}/{{x}}.{ext}"
 VWORLD_ATTR = '&copy; <a href="https://www.vworld.kr">VWorld</a> (국토교통부)'
 
@@ -31,8 +33,9 @@ DUPLICATE_ROUTE_M = 25  # 두 경로 차이가 이보다 작으면 같은 경로
 # 데모 경로 예상 시간 계산용 보행 속도 (약 4km/h). TMAP 연동 후에는 TMAP 값을 쓴다.
 DEMO_WALK_SPEED_MPS = 1.1
 
-# 시설 공백 구간 분석 간격(m)
+# 시설 공백 구간 분석 간격(m)과 지도에 그릴 최소 길이(m)
 GAP_SAMPLE_STEP_M = 10
+GAP_DRAW_MIN_M = 100
 
 # 실제 공공데이터 정리 파일 (STEP 3에서 생성). 이 파일이 있으면 시설은 실제 데이터를 쓴다.
 PUBLIC_FACILITIES_PATH = PROJECT_ROOT / "data" / "processed" / "facilities_geumjeong.csv"

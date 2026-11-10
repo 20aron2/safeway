@@ -9,6 +9,9 @@
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlencode
+
 import streamlit as st
 from streamlit_folium import st_folium
 
@@ -44,6 +47,7 @@ DEFAULT_STATE = {
     "search_msg_end": None,
     "locating": False,    # '현재 위치를 출발지로'를 누른 뒤 위치를 기다리는 중
     "loc_msg": None,
+    "link_loaded": False, # 공유 링크로 들어왔을 때 한 번만 처리
     "last_click": None,   # 같은 클릭을 두 번 처리하지 않기 위한 기록
     "result": None,       # 탐색 결과 (경로 + 시설)
     "error": None,
@@ -70,6 +74,7 @@ def set_point(which: str, point, name: str) -> None:
     S[f"found_{which}"] = []
     S.result = None
     S.error = None
+    st.query_params.clear()  # 이전 경로의 공유 주소는 더 이상 맞지 않는다
 
 
 def handle_click(point: tuple[float, float]) -> None:
@@ -88,6 +93,7 @@ def reset() -> None:
     S.found_start, S.found_end = [], []
     S.search_msg_start = S.search_msg_end = None
     S.locating = False
+    st.query_params.clear()
 
 
 def run_place_search(which: str, keyword: str) -> None:
@@ -160,6 +166,11 @@ def cached_places(keyword, app_key):
     return sr.search_places(keyword, app_key)
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def cached_police(center, app_key):
+    return sr.find_police(center, app_key)
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_routes(start, end, source, app_key):
     """같은 출발·도착은 1시간 동안 다시 묻지 않는다 (TMAP 무료 사용량 절약)."""
@@ -176,14 +187,58 @@ def run_search() -> None:
         S.result, S.error = None, str(e)
         return
     facility_source, facilities = prepare_facilities(routes)
+    police = []
+    if tmap_key:  # 지구대·파출소는 참고 정보라 실패해도 경로 비교는 계속한다
+        mid = ((S.start[0] + S.end[0]) / 2, (S.start[1] + S.end[1]) / 2)
+        try:
+            police = cached_police((round(mid[0], 3), round(mid[1], 3)), tmap_key)
+        except sr.SearchError:
+            police = []
     S.result = {
         "routes": routes,
         "facilities": facilities,
         "route_source": route_source,
         "facility_source": facility_source,
+        "police": police,
     }
     S.error = None
     S.search_id += 1
+
+
+def _parse_point(text: str | None):
+    """'35.2316,129.0846' → (35.2316, 129.0846). 한국 범위를 벗어나거나 형식이 틀리면 None."""
+    try:
+        lat, lon = (float(v) for v in (text or "").split(","))
+    except ValueError:
+        return None
+    return (round(lat, 6), round(lon, 6)) if 33 <= lat <= 39 and 124 <= lon <= 132 else None
+
+
+def share_url() -> str | None:
+    """지금 출발·도착이 담긴 주소. 주소창의 서버 이름으로 만든다."""
+    if S.start is None or S.end is None:
+        return None
+    query = urlencode({"from": f"{S.start[0]},{S.start[1]}", "to": f"{S.end[0]},{S.end[1]}",
+                       "fn": S.start_name or "", "tn": S.end_name or ""})
+    try:
+        host = st.context.headers.get("host")
+    except Exception:
+        host = None
+    if not host:
+        return f"?{query}"
+    scheme = "http" if host.startswith(("localhost", "127.0.0.1")) else "https"
+    return f"{scheme}://{host}/?{query}"
+
+
+# 공유 링크로 들어온 경우: 출발·도착을 채우고 바로 탐색 (처음 한 번만)
+if not S.link_loaded:
+    S.link_loaded = True
+    qp_start, qp_end = _parse_point(st.query_params.get("from")), _parse_point(st.query_params.get("to"))
+    if qp_start and qp_end:
+        set_point("start", qp_start, st.query_params.get("fn") or texts.SHARED_NAME)
+        set_point("end", qp_end, st.query_params.get("tn") or texts.SHARED_NAME)
+        run_search()
+        S.loc_msg = texts.SHARED_OPENED
 
 
 # ---------------------------------------------------------------- 화면: 상단
@@ -254,6 +309,8 @@ if S.data_warning:
 # ---------------------------------------------------------------- 화면: 결과
 selected_id = None
 near_ids: list[str] = []
+gap_segments: list = []
+police: list = []
 radius = None
 
 if result:
@@ -276,7 +333,11 @@ if result:
             help="경로에서 이 거리 안에 있는 시설을 셉니다. 검증된 '안전 반경'이 아닌 분석용 값이에요.",
         )
 
-    metrics = [analysis.analyze_route(r, result["facilities"], radius) for r in routes]
+    memo_key = (S.search_id, radius)
+    if S.get("metrics_key") != memo_key:  # 같은 탐색·반경이면 다시 계산하지 않는다
+        S.metrics = [analysis.analyze_route(r, result["facilities"], radius) for r in routes]
+        S.metrics_key = memo_key
+    metrics = S.metrics
     scored = recommend.score_routes(metrics, mode)
     rec_id = scored["recommended_id"]
 
@@ -292,6 +353,8 @@ if result:
 
     rows_by_id = {row["route_id"]: row for row in scored["rows"]}
     near_ids = rows_by_id[selected_id]["near_ids"]
+    gap_segments = rows_by_id[selected_id]["gap_segments"]
+    police = result.get("police") or []
 
     cols = st.columns(len(routes))
     for i, (col, route) in enumerate(zip(cols, routes)):
@@ -300,7 +363,8 @@ if result:
                           config.ROUTE_COLORS[i % len(config.ROUTE_COLORS)],
                           recommended=route["id"] == rec_id,
                           selected=route["id"] == selected_id,
-                          facilities_are_demo=demo_fac)
+                          facilities_are_demo=demo_fac,
+                          nearest_police=analysis.nearest_place(route["coords"], police))
 
     with st.container(border=True):
         st.markdown(f"#### 추천: 경로 {rec_id}")
@@ -320,6 +384,13 @@ if result:
             reason = f" (AI 설명을 쓰지 못한 이유: {ai_issue})" if gemini_key else ""
             st.caption("설명 출처: Python 계산 결과로 자동 생성한 기본 설명" + reason)
 
+    # 경로 공유: 주소창에도 같은 값을 넣어 두면 브라우저 '공유' 버튼으로도 보낼 수 있다
+    st.query_params.update({"from": f"{S.start[0]},{S.start[1]}", "to": f"{S.end[0]},{S.end[1]}",
+                            "fn": S.start_name or "", "tn": S.end_name or ""})
+    with st.expander("🔗 이 경로 공유하기"):
+        st.code(share_url() or "", language=None)
+        st.caption(texts.SHARE_NOTE)
+
     with st.expander("점수는 어떻게 계산하나요?"):
         st.markdown(recommend.formula_markdown(mode))
     with st.expander("공공데이터로 알 수 없는 것"):
@@ -327,13 +398,22 @@ if result:
 
 # ---------------------------------------------------------------- 지도 (위에 비워 둔 자리)
 with map_slot:
+    vworld_key = get_secret("VWORLD_API_KEY")
+    night = False
+    if vworld_key:  # 야간 지도는 브이월드에만 있다
+        hour = datetime.now(timezone(timedelta(hours=9))).hour  # 한국 시간
+        start_h, end_h = config.NIGHT_HOURS
+        night = st.toggle("🌙 야간 지도", value=hour >= start_h or hour < end_h, key="night")
     fmap = build_map(
         start=S.start, end=S.end, start_name=S.start_name, end_name=S.end_name,
         routes=result["routes"] if result else None,
         selected_id=selected_id,
         facilities=result["facilities"] if result else None,
         near_ids=near_ids,
-        vworld_key=get_secret("VWORLD_API_KEY"),
+        vworld_key=vworld_key,
+        gap_segments=gap_segments,
+        police=police,
+        night=night,
     )
     map_kwargs = dict(key="main_map", height=config.MAP_HEIGHT_PX, returned_objects=["last_clicked"])
     try:
@@ -341,7 +421,8 @@ with map_slot:
     except TypeError:  # streamlit-folium 버전에 따라 옵션 이름이 다를 때
         map_data = st_folium(fmap, **map_kwargs)
 with legend_slot:
-    ui.legend(radius)
+    has_lights = bool(result) and "light" in set(result["facilities"]["kind"])
+    ui.legend(radius, has_police=bool(police), has_gaps=bool(gap_segments), has_lights=has_lights)
 
 with st.expander(texts.HOW_TO_TITLE):
     st.markdown(texts.HOW_TO_BODY)
