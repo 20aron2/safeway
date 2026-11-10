@@ -1,0 +1,17 @@
+# 가상환경
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# API 키 (절대 GitHub에 올리지 않기)
+.streamlit/secrets.toml
+.env
+
+# 원본 공공데이터 (용량이 커서 올리지 않음. 정리본 data/processed/ 만 올린다)
+data/raw/*
+!data/raw/.gitkeep
+
+.DS_Store
+Thumbs.db
