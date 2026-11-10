@@ -36,3 +36,7 @@ GAP_SAMPLE_STEP_M = 10
 
 # 실제 공공데이터 정리 파일 (STEP 3에서 생성). 이 파일이 있으면 시설은 실제 데이터를 쓴다.
 PUBLIC_FACILITIES_PATH = PROJECT_ROOT / "data" / "processed" / "facilities_geumjeong.csv"
+
+# Gemini 설명 모델. 무료 티어에서 쓸 수 있는 가벼운 모델.
+# 모델 이름이 바뀌어 오류가 나면 여기만 고치면 된다 (예: "gemini-3.5-flash").
+GEMINI_MODEL = "gemini-3.1-flash-lite"

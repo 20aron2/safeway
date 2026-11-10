@@ -3,3 +3,4 @@ folium>=0.17
 streamlit-folium>=0.22
 pandas>=2.2
 requests>=2.31
+google-genai>=1.0

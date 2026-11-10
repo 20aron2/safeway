@@ -82,6 +82,12 @@ def prepare_facilities(routes: list[dict]):
     return "demo", fac.make_demo_facilities(routes, S.start)
 
 
+@st.cache_data(ttl=86400, show_spinner="AI 설명을 만드는 중…")
+def cached_gemini(payload_json, api_key, model):
+    """같은 계산 결과면 Gemini를 다시 부르지 않는다 (슬라이더를 움직일 때마다 호출 방지)."""
+    return explain.call_gemini(payload_json, api_key, model)
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_routes(start, end, source, app_key):
     """같은 출발·도착은 1시간 동안 다시 묻지 않는다 (TMAP 무료 사용량 절약)."""
@@ -190,10 +196,20 @@ if result:
     with st.container(border=True):
         st.markdown(f"#### 추천: 경로 {rec_id}")
         st.caption(f"추천 기준: {recommend.MODES[mode]['label']} · 분석 반경 {radius}m")
-        ai_text = explain.get_ai_explanation(scored, radius, get_secret("GEMINI_API_KEY"))
-        st.markdown(ai_text or explain.build_basic_explanation(scored, radius, demo_fac))
-        st.caption("설명 출처: " + ("Gemini (Python 계산 결과 기반)" if ai_text
-                                    else "Python 계산 결과로 자동 생성한 기본 설명"))
+        basic_text = explain.build_basic_explanation(scored, radius, demo_fac)
+        gemini_key = get_secret("GEMINI_API_KEY")
+        payload = explain.build_ai_payload(scored, routes, radius,
+                                           recommend.MODES[mode]["label"], demo_fac)
+        ai_text, ai_issue = explain.get_ai_explanation(
+            payload, gemini_key, config.GEMINI_MODEL, caller=cached_gemini)
+        st.markdown(ai_text or basic_text)
+        if ai_text:
+            st.caption("설명 출처: Gemini · Python이 계산한 숫자만 사용하도록 확인했어요")
+            with st.expander("Python 계산 결과로 만든 기본 설명 보기"):
+                st.markdown(basic_text)
+        else:
+            reason = f" (AI 설명을 쓰지 못한 이유: {ai_issue})" if gemini_key else ""
+            st.caption("설명 출처: Python 계산 결과로 자동 생성한 기본 설명" + reason)
 
     with st.expander("점수는 어떻게 계산하나요?"):
         st.markdown(recommend.formula_markdown(mode))

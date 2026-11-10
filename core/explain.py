@@ -1,11 +1,14 @@
 """비교 결과 설명 문장 (담당: AI 설명).
 
 - build_basic_explanation(): Python 계산 결과만으로 만드는 기본 설명. 항상 동작한다.
-- get_ai_explanation(): Gemini 설명 (STEP 5에서 구현). 실패하면 None → 기본 설명을 쓴다.
+- get_ai_explanation(): Gemini 설명. 실패하거나 숫자를 지어내면 None → 기본 설명을 쓴다.
 
 어느 쪽이든 숫자는 Python이 계산한 값만 쓴다. AI가 숫자를 새로 만들지 않게 한다.
 """
 from __future__ import annotations
+
+import json
+import re
 
 
 def fmt_distance(m: float) -> str:
@@ -84,6 +87,93 @@ def build_basic_explanation(scored: dict, radius_m: float, facilities_are_demo: 
     return "\n\n".join(lines)
 
 
-def get_ai_explanation(scored: dict, radius_m: float, api_key: str | None) -> str | None:
-    """Gemini로 설명 생성 (STEP 5에서 구현). 지금은 항상 None."""
-    return None
+# ---------------------------------------------------------------- Gemini 설명
+
+AI_SYSTEM = (
+    "너는 야간 보행 경로 비교 앱 '안심길'의 설명 도우미야. 사용자가 준 JSON의 계산 결과만 보고 "
+    "한국어로 3~4문장의 짧은 설명을 써. 규칙: "
+    "(1) 숫자는 JSON에 적힌 값을 글자 그대로만 써. 새로 계산하거나 반올림하거나 단위를 바꾸지 마. "
+    "(2) 추천 경로가 왜 추천됐는지, 다른 경로와 무엇이 다른지 말해. "
+    "(3) '안전하다', '위험하다'고 단정하지 말고 '등록된 시설이 더 많다'처럼 사실만 말해. "
+    "(4) 마지막 문장은 공공데이터가 실제 작동 여부나 현장 상황을 알려주지 않는다는 짧은 주의로 끝내. "
+    "(5) 제목, 목록, 표 없이 문단 하나로 써."
+)
+
+
+def build_ai_payload(scored: dict, routes: list[dict], radius_m: float,
+                     mode_label: str, facilities_are_demo: bool) -> dict:
+    """Gemini에 보낼 계산 결과. 위치 좌표는 보내지 않는다 (개인정보 최소화)."""
+    rows = scored["rows"]
+    label_of = {r["id"]: r["label"] for r in routes}
+    shortest = min(rows, key=lambda r: r["distance_m"])
+    out = []
+    for r in rows:
+        extra_m = r["distance_m"] - shortest["distance_m"]
+        extra_s = r["duration_s"] - shortest["duration_s"]
+        out.append({
+            "경로": r["route_id"],
+            "종류": label_of.get(r["route_id"], ""),
+            "거리": fmt_distance(r["distance_m"]),
+            "예상시간": fmt_duration(r["duration_s"]),
+            "최단경로보다_더긴거리": "없음(최단)" if extra_m < 1 else fmt_distance(extra_m),
+            "최단경로보다_더걸리는시간": "없음(최단)" if extra_m < 1 else fmt_duration(extra_s),
+            "반경안_CCTV": f"{r['cctv']}곳",
+            "반경안_비상벨": f"{r['bell']}곳",
+            "1km당_시설": f"{r['per_km']:.1f}곳",
+            "시설없는_최장구간": fmt_distance(r["longest_gap_m"]),
+            "비교점수": f"{r['score']:.0f}점",
+        })
+    return {
+        "추천경로": scored["recommended_id"],
+        "추천기준": mode_label,
+        "분석반경": f"{radius_m:.0f}m",
+        "시설데이터": "가상 데이터(실제 위치 아님)" if facilities_are_demo else "공공데이터포털 구청 등록 시설",
+        "경로들": out,
+    }
+
+
+_NUMBER = re.compile(r"\d+(?:\.\d+)?")
+
+
+def numbers_in(text: str) -> set[str]:
+    return set(_NUMBER.findall(text))
+
+
+def ai_text_is_grounded(ai_text: str, payload_json: str) -> bool:
+    """AI 문장의 모든 숫자가 보낸 계산 결과 안에 있는지 확인한다 (지어낸 숫자 차단)."""
+    if "%" in ai_text:  # 비율은 보내지 않으므로, 비율이 나오면 AI가 만든 숫자다
+        return False
+    allowed = numbers_in(payload_json) | {"112"}
+    return numbers_in(ai_text) <= allowed
+
+
+def call_gemini(payload_json: str, api_key: str, model: str) -> str:
+    """Gemini 호출. 실패하면 예외를 그대로 올린다 (화면에서 기본 설명으로 대체)."""
+    from google import genai  # 키가 있을 때만 필요해서 여기서 불러온다
+    from google.genai import types
+
+    client = genai.Client(api_key=api_key.strip())
+    resp = client.models.generate_content(
+        model=model,
+        contents="다음 경로 비교 결과를 설명해 줘.\n" + payload_json,
+        config=types.GenerateContentConfig(system_instruction=AI_SYSTEM),
+    )
+    text = (resp.text or "").strip()
+    if not text:
+        raise ValueError("빈 응답")
+    return text
+
+
+def get_ai_explanation(payload: dict, api_key: str | None, model: str,
+                       caller=call_gemini) -> tuple[str | None, str | None]:
+    """(AI 설명, 실패 이유)를 돌려준다. 둘 중 하나는 None."""
+    if not api_key:
+        return None, "Gemini 키 없음"
+    payload_json = json.dumps(payload, ensure_ascii=False)
+    try:
+        text = caller(payload_json, api_key, model)
+    except Exception as e:  # 네트워크, 키, 사용량, 모델 이름 오류 등 무엇이든 기본 설명으로
+        return None, f"Gemini 호출 실패 ({type(e).__name__})"
+    if not ai_text_is_grounded(text, payload_json):
+        return None, "AI가 계산 결과에 없는 숫자를 써서 사용하지 않음"
+    return text, None

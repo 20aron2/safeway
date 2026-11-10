@@ -38,9 +38,9 @@ python -m pytest
 | CCTV·비상벨 표시와 반경 안 개수 세기 | **실제 공공데이터** (금정구청 CCTV 320곳, 비상벨 32곳) |
 | 1km당 시설 수, 시설 없는 최장 구간 | 동작 |
 | 추천 기준 3가지, 점수 공식 공개 | 동작 |
-| 설명 문장 | Python 기본 설명 (Gemini는 다음 단계) |
+| 설명 문장 | Gemini 키가 있으면 AI 설명 (Python이 계산한 숫자만 쓰는지 자동 확인), 없거나 실패하면 Python 기본 설명 |
 
-화면 상단 노란 배너에 무엇이 가상 데이터인지 항상 표시돼요.
+화면 상단 배너에 데이터 출처가 항상 표시돼요. 가상 데이터가 섞이면 노란색 '데모 모드', 모두 실제 데이터면 초록색 '실제 데이터 모드'예요.
 
 ## 공공데이터 다시 정리하기
 
@@ -52,7 +52,7 @@ python scripts/build_facilities.py
 
 정리 과정은 `data/processed/cleaning_report.md`에 기록돼요.
 
-## API 키 넣는 법 (STEP 4~5에서)
+## API 키 넣는 법
 
 `.streamlit/secrets.toml.example`을 복사해 `secrets.toml`로 이름을 바꾸고 키를 넣어요.
 이 파일은 `.gitignore`에 있어서 GitHub에 올라가지 않아요.
