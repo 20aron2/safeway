@@ -1,0 +1,238 @@
+<!doctype html>
+<!--
+  안심길 TMAP 지도 부품.
+  Python(core/tmap_map.py)이 스크립트 주소의 appKey 자리표시자에 TMAP 키를 넣어 임시 폴더에 index.html로 만든다.
+  Streamlit과는 postMessage로 주고받는다:
+    받기  streamlit:render         → 그릴 내용(args.data)
+    보내기 streamlit:setComponentValue → {"last_clicked": {"lat", "lng"}, "ts"}
+-->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://apis.openapi.sk.com/tmap/jsv2?version=1&appKey=__APPKEY__"></script>
+<style>
+  html, body { margin: 0; padding: 0; font-family: -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
+  #wrap { position: relative; width: 100%; border-radius: 10px; overflow: hidden; }
+  #map_div { width: 100%; }
+  #msg { display: none; padding: 16px; font-size: 14px; color: #92400E; background: #FFFBEB;
+         border: 1px dashed #F59E0B; border-radius: 10px; line-height: 1.6; }
+  #locate { position: absolute; top: 10px; left: 10px; z-index: 1000; border: 1px solid #D1D5DB;
+            background: #fff; border-radius: 8px; padding: 7px 10px; font-size: 13px; cursor: pointer;
+            box-shadow: 0 1px 4px rgba(0,0,0,.2); }
+  #locate.on { background: #2563EB; color: #fff; border-color: #2563EB; }
+  /* 야간: 지도 바탕 그림(타일)만 어둡게. 우리가 그린 아이콘(data: 이미지)과 선은 그대로 */
+  #wrap.night #map_div img:not([src^="data:"]) {
+    filter: invert(0.92) hue-rotate(180deg) brightness(0.95) contrast(0.9);
+  }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="map_div"></div>
+  <button id="locate" type="button" title="내 위치 보기">📍 내 위치</button>
+</div>
+<div id="msg"></div>
+<script>
+(function () {
+  "use strict";
+
+  // ------------------------------------------------ Streamlit과 주고받기
+  function send(type, extra) {
+    window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, extra || {}), "*");
+  }
+  function setHeight(h) { send("streamlit:setFrameHeight", { height: h }); }
+  function setValue(v) { send("streamlit:setComponentValue", { value: v, dataType: "json" }); }
+
+  var map = null, overlays = [], lastFitKey = null, height = 460;
+  var me = { watch: null, marker: null, ring: null, centered: false };
+
+  function showError(text) {
+    document.getElementById("wrap").style.display = "none";
+    var m = document.getElementById("msg");
+    m.style.display = "block";
+    m.textContent = text;
+    setHeight(m.offsetHeight + 8);
+  }
+
+  // ------------------------------------------------ 그림 도구
+  function LL(p) { return new Tmapv2.LatLng(p[0], p[1]); }
+
+  function svgIcon(svg) { return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg); }
+
+  function emojiIcon(emoji, opacity, ring) {
+    var bg = ring ? '<circle cx="14" cy="14" r="12" fill="#fff" stroke="' + ring + '" stroke-width="2"/>' : "";
+    return svgIcon('<svg xmlns="http://www.w3.org/2000/svg" width="28" height="28"><g opacity="' + opacity + '">' +
+      bg + '<text x="14" y="19" font-size="15" text-anchor="middle">' + emoji + "</text></g></svg>");
+  }
+
+  function pinIcon(label, color) {
+    return svgIcon('<svg xmlns="http://www.w3.org/2000/svg" width="48" height="34">' +
+      '<rect x="1" y="1" width="46" height="24" rx="12" fill="' + color + '"/>' +
+      '<path d="M18 24 L24 33 L30 24 Z" fill="' + color + '"/>' +
+      '<text x="24" y="17.5" font-size="12" font-weight="700" fill="#fff" text-anchor="middle">' + label + "</text></svg>");
+  }
+
+  function lightIcon(on) {
+    var s = on ? 10 : 7, r = s / 2;
+    return svgIcon('<svg xmlns="http://www.w3.org/2000/svg" width="' + s + '" height="' + s + '">' +
+      '<circle cx="' + r + '" cy="' + r + '" r="' + (r - 0.5) + '" fill="#EAB308" fill-opacity="' +
+      (on ? 0.95 : 0.4) + '"/></svg>');
+  }
+
+  function dotIcon() {
+    return svgIcon('<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22">' +
+      '<circle cx="11" cy="11" r="8" fill="#2563EB" stroke="#fff" stroke-width="3"/></svg>');
+  }
+
+  function keep(o) { overlays.push(o); return o; }
+
+  function clearOverlays() {
+    overlays.forEach(function (o) { try { o.setMap(null); } catch (e) {} });
+    overlays = [];
+  }
+
+  function marker(pos, icon, w, h, title) {
+    return keep(new Tmapv2.Marker({
+      position: LL(pos), icon: icon, iconSize: new Tmapv2.Size(w, h), title: title || "", map: map
+    }));
+  }
+
+  function line(path, color, weight, opacity, style) {
+    if (!path || path.length < 2) return null;
+    return keep(new Tmapv2.Polyline({
+      path: path.map(LL), strokeColor: color, strokeWeight: weight, strokeOpacity: opacity,
+      strokeStyle: style || "solid", map: map
+    }));
+  }
+
+  // ------------------------------------------------ 받은 내용 그리기
+  function draw(d) {
+    clearOverlays();
+    var wrap = document.getElementById("wrap");
+    wrap.className = d.night ? "night" : "";
+
+    (d.lights || []).forEach(function (f) {          // 보안등: 화면에서 항상 같은 크기의 작은 노란 점
+      var s = f.on ? 10 : 7;
+      marker([f.lat, f.lon], lightIcon(f.on), s, s, f.name);
+    });
+
+    (d.routes || []).forEach(function (r) {          // 경로: 선택한 경로를 마지막(맨 위)에
+      line(r.coords, r.color, r.selected ? 7 : 4, r.selected ? 0.95 : 0.35);
+    });
+
+    (d.gaps || []).forEach(function (g) {            // CCTV·비상벨 없는 구간: 빨간 점선
+      line(g.coords, "#DC2626", 5, 0.95, "dot");
+    });
+
+    (d.facilities || []).forEach(function (f) {      // CCTV·비상벨
+      marker([f.lat, f.lon], emojiIcon(f.kind === "cctv" ? "📷" : "🔔", f.on ? 1 : 0.35), 28, 28, f.name);
+    });
+
+    (d.police || []).forEach(function (p) {          // 지구대·파출소
+      marker([p.lat, p.lon], emojiIcon("🚓", 1, "#1D4ED8"), 28, 28, "🚓 " + p.name);
+    });
+
+    if (d.start) marker(d.start, pinIcon("출발", "#111827"), 48, 34, "출발: " + (d.start_name || ""));
+    if (d.end) marker(d.end, pinIcon("도착", "#DC2626"), 48, 34, "도착: " + (d.end_name || ""));
+
+    // 출발·도착·경로가 바뀐 경우에만 화면을 맞춘다 (슬라이더를 움직여도 확대 상태 유지)
+    if (d.fit_key !== lastFitKey) {
+      lastFitKey = d.fit_key;
+      var pts = d.fit_points || [];
+      if (pts.length >= 2) {
+        var b = new Tmapv2.LatLngBounds();
+        pts.forEach(function (p) { b.extend(LL(p)); });
+        try { map.fitBounds(b, { left: 40, top: 40, right: 40, bottom: 40 }); }
+        catch (e) { map.fitBounds(b); }
+      } else if (pts.length === 1) {
+        map.setCenter(LL(pts[0]));
+      }
+    }
+  }
+
+  // ------------------------------------------------ 내 위치 (브라우저 안에서만 사용)
+  function toggleLocate() {
+    var btn = document.getElementById("locate");
+    if (me.watch !== null) {
+      navigator.geolocation.clearWatch(me.watch);
+      me.watch = null; btn.className = "";
+      if (me.marker) me.marker.setMap(null);
+      if (me.ring) me.ring.setMap(null);
+      me.marker = me.ring = null;
+      return;
+    }
+    if (!navigator.geolocation) { btn.textContent = "위치 미지원"; return; }
+    btn.className = "on"; me.centered = false;
+    me.watch = navigator.geolocation.watchPosition(function (pos) {
+      var p = [pos.coords.latitude, pos.coords.longitude];
+      if (!me.marker) {
+        me.marker = new Tmapv2.Marker({ position: LL(p), icon: dotIcon(), iconSize: new Tmapv2.Size(22, 22),
+                                        title: "내 위치", map: map });
+        me.ring = new Tmapv2.Circle({ center: LL(p), radius: Math.max(pos.coords.accuracy || 0, 10),
+                                      strokeWeight: 1, strokeColor: "#2563EB", fillColor: "#2563EB",
+                                      fillOpacity: 0.12, map: map });
+      } else {
+        me.marker.setPosition(LL(p));
+        if (me.ring.setCenter) me.ring.setCenter(LL(p));
+      }
+      if (!me.centered) { map.setCenter(LL(p)); me.centered = true; }
+    }, function () {
+      btn.className = ""; btn.textContent = "위치 권한 필요"; me.watch = null;
+    }, { enableHighAccuracy: true, maximumAge: 5000 });
+  }
+
+  // ------------------------------------------------ 시작
+  function init(d) {
+    height = d.height || 460;
+    if (typeof Tmapv2 === "undefined") {
+      showError("TMAP 지도를 불러오지 못했어요. 지도 위 '지도 선택'에서 브이월드로 바꿔 주세요. " +
+                "(TMAP 키 또는 인터넷 연결을 확인해 주세요)");
+      return;
+    }
+    map = new Tmapv2.Map("map_div", {
+      center: LL(d.center), width: "100%", height: height + "px", zoom: d.zoom || 16
+    });
+    map.addListener("click", function (evt) {
+      var ll = evt && evt.latLng;
+      if (!ll) return;
+      var lat = typeof ll.lat === "function" ? ll.lat() : ll._lat;
+      var lng = typeof ll.lng === "function" ? ll.lng() : ll._lng;
+      if (typeof lat !== "number" || typeof lng !== "number") return;
+      setValue({ last_clicked: { lat: lat, lng: lng }, ts: Date.now() });
+    });
+    document.getElementById("locate").addEventListener("click", toggleLocate);
+    setHeight(height);
+  }
+
+  var pending = null, waiting = false, tries = 0;
+
+  function handle(d) {
+    try {
+      if (!map) init(d);
+      if (map) draw(d);
+    } catch (e) {
+      showError("지도를 그리는 중 문제가 생겼어요: " + e.message + " — 지도 선택에서 브이월드로 바꿔 주세요.");
+    }
+  }
+
+  // TMAP 스크립트가 늦게 준비될 수 있어 최대 5초까지 기다린다
+  function waitForSdk() {
+    if (typeof Tmapv2 !== "undefined" || tries >= 25) { waiting = false; handle(pending); return; }
+    tries += 1;
+    setTimeout(waitForSdk, 200);
+  }
+
+  window.addEventListener("message", function (event) {
+    var msg = event.data;
+    if (!msg || msg.type !== "streamlit:render") return;
+    pending = (msg.args && msg.args.data) || {};
+    if (map || typeof Tmapv2 !== "undefined") { handle(pending); return; }
+    if (!waiting) { waiting = true; setHeight(pending.height || 460); waitForSdk(); }
+  });
+
+  send("streamlit:componentReady", { apiVersion: 1 });
+})();
+</script>
+</body>
+</html>

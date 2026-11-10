@@ -21,10 +21,11 @@ from core import routes as rt
 from core import search as sr
 from core.geo import bbox, haversine_m
 
-try:  # 현재 위치 읽기 부품 (없어도 앱은 동작)
-    from streamlit_js_eval import get_geolocation
+try:  # 현재 위치·브라우저 시각 읽기 부품 (없어도 앱은 동작)
+    from streamlit_js_eval import get_geolocation, streamlit_js_eval
 except ImportError:
-    get_geolocation = None
+    get_geolocation = streamlit_js_eval = None
+from core import tmap_map
 from core.map_view import build_map
 
 st.set_page_config(
@@ -399,27 +400,51 @@ if result:
 # ---------------------------------------------------------------- 지도 (위에 비워 둔 자리)
 with map_slot:
     vworld_key = get_secret("VWORLD_API_KEY")
+    tmap_key = get_secret("TMAP_APP_KEY")
+    c_map, c_night = st.columns([3, 2], vertical_alignment="bottom")
+    with c_map:
+        providers = (["tmap"] if tmap_key else []) + ["vworld"]
+        default_provider = config.MAP_PROVIDER if config.MAP_PROVIDER in providers else providers[0]
+        provider = st.segmented_control(
+            "지도 선택", options=providers, default=default_provider, key="map_provider",
+            format_func=lambda p: {"tmap": "TMAP 지도", "vworld": "브이월드 지도" if vworld_key else "기본 지도"}[p],
+        ) or default_provider
     night = False
-    if vworld_key:  # 야간 지도는 브이월드에만 있다
-        hour = datetime.now(timezone(timedelta(hours=9))).hour  # 한국 시간
-        start_h, end_h = config.NIGHT_HOURS
-        night = st.toggle("🌙 야간 지도", value=hour >= start_h or hour < end_h, key="night")
-    fmap = build_map(
+    with c_night:
+        if provider == "tmap" or vworld_key:  # 야간 지도는 TMAP과 브이월드에서만
+            # '밤'은 보는 사람 기준이라 브라우저 시각을 쓴다. 아직 모르면 한국 시간으로.
+            if streamlit_js_eval is not None and S.get("browser_hour") is None:
+                h = streamlit_js_eval(js_expressions="new Date().getHours()", key="browser_hour_js")
+                if isinstance(h, (int, float)):
+                    S.browser_hour = int(h)
+            hour = S.get("browser_hour")
+            if hour is None:
+                hour = datetime.now(timezone(timedelta(hours=9))).hour
+            start_h, end_h = config.NIGHT_HOURS
+            if not S.get("night_touched"):  # 직접 바꾸기 전까지는 시각에 맞춰 자동
+                S["night"] = hour >= start_h or hour < end_h
+            night = st.toggle("🌙 야간 지도", key="night",
+                              on_change=lambda: S.update(night_touched=True))
+
+    map_parts = dict(
         start=S.start, end=S.end, start_name=S.start_name, end_name=S.end_name,
         routes=result["routes"] if result else None,
         selected_id=selected_id,
         facilities=result["facilities"] if result else None,
         near_ids=near_ids,
-        vworld_key=vworld_key,
         gap_segments=gap_segments,
         police=police,
         night=night,
     )
-    map_kwargs = dict(key="main_map", height=config.MAP_HEIGHT_PX, returned_objects=["last_clicked"])
-    try:
-        map_data = st_folium(fmap, use_container_width=True, **map_kwargs)
-    except TypeError:  # streamlit-folium 버전에 따라 옵션 이름이 다를 때
-        map_data = st_folium(fmap, **map_kwargs)
+    if provider == "tmap":
+        map_data = tmap_map.render(tmap_map.build_payload(**map_parts), tmap_key)
+    else:
+        fmap = build_map(**map_parts, vworld_key=vworld_key)
+        map_kwargs = dict(key="main_map", height=config.MAP_HEIGHT_PX, returned_objects=["last_clicked"])
+        try:
+            map_data = st_folium(fmap, use_container_width=True, **map_kwargs)
+        except TypeError:  # streamlit-folium 버전에 따라 옵션 이름이 다를 때
+            map_data = st_folium(fmap, **map_kwargs)
 with legend_slot:
     has_lights = bool(result) and "light" in set(result["facilities"]["kind"])
     ui.legend(radius, has_police=bool(police), has_gaps=bool(gap_segments), has_lights=has_lights)

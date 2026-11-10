@@ -7,6 +7,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CENTER = (35.2316, 129.0846)
 DEFAULT_ZOOM = 16  # 도보 경로가 잘 보이는 확대 수준
 MAP_HEIGHT_PX = 460
+# 기본 지도: "tmap"(TMAP 웹 지도, TMAP 키 필요) 또는 "vworld"(브이월드, 키 없으면 OpenStreetMap)
+MAP_PROVIDER = "tmap"
 MAP_TILES = "OpenStreetMap"  # 브이월드 키가 없을 때 쓰는 기본 지도
 
 # 브이월드(국토교통부) 배경지도. .streamlit/secrets.toml 에 VWORLD_API_KEY 가 있으면 사용.

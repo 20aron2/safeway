@@ -36,7 +36,9 @@ safeway/
 │   ├── analysis.py         경로 반경 안 시설 수, 밀도, 공백 구간
 │   ├── recommend.py        비교 점수와 추천 (규칙 기반)
 │   ├── explain.py          설명 문장 (기본 설명 / Gemini)
-│   ├── map_view.py         folium 지도 그리기
+│   ├── map_view.py         folium 지도 그리기 (브이월드/OSM)
+│   ├── tmap_map.py         TMAP 웹 지도 부품 (Python 쪽)
+│   ├── tmap_component/     TMAP 웹 지도 부품 (HTML·JS 화면)
 │   └── ui.py               CSS와 카드 디자인
 ├── data/
 │   ├── raw/                원본 CSV (GitHub에 안 올림)
@@ -103,5 +105,6 @@ safeway/
 | STEP 5 | Gemini 설명 (`explain.get_ai_explanation`): 계산 결과만 전달, 지어낸 숫자가 있으면 기본 설명으로 대체 | 완료 (배포 앱에서 동작 확인) |
 | 추가 | 장소 검색, 현재 위치, 지도 위 내 위치 표시 | 완료 |
 | 추가 2 | 시설 없는 구간 지도 표시, 지구대·파출소, 공유 링크, 야간 지도 | 코드 완료, 실제 화면 확인 필요 |
-| 추가 3 | 보안등 데이터 (4,719곳, 점수의 시설 부분에 50% 반영) | 코드 완료, 실제 화면 확인 필요 |
+| 추가 3 | 보안등 데이터 (4,719곳, 점수의 시설 부분에 50% 반영) | 완료 |
+| 추가 4 | TMAP 웹 지도 (기본), 브이월드로 전환 가능 | 코드 완료, 실제 화면 확인 필요 |
 | STEP 6 | 배포(Streamlit Cloud), 모바일 점검, 발표 준비 | 마지막 |
