@@ -57,7 +57,7 @@ def test_search_request_shape(monkeypatch):
     out = sr.search_places("  부산대역 ", " KEY ")
     assert len(out) == 2
     assert seen["headers"]["appKey"] == "KEY"
-    p = seen["params"]
+    p = seen["params"]   # 결과가 적어서 마지막에 거리순 보충 검색을 했다
     assert p["searchKeyword"] == "부산대역" and p["searchtypCd"] == "R" and p["radius"] == "30"
     assert p["resCoordType"] == "WGS84GEO"
 
@@ -94,4 +94,60 @@ def test_find_police_filters_and_dedupes(monkeypatch):
     monkeypatch.setattr(requests, "get", fake_get)
     found = sr.find_police((35.23, 129.08), "K")
     assert [p["name"] for p in found] == ["부산금정경찰서 장전지구대", "부곡치안센터[부산]"]  # 중복·식당 제외
-    assert calls == [("지구대", "2"), ("파출소", "2")]
+    assert calls == [("지구대", "2"), ("파출소", "2")]   # 거리순(R) 검색만 쓴다
+
+
+def _poi(name, lat, lon):
+    return {"name": name, "noorLat": str(lat), "noorLon": str(lon)}
+
+
+def _pois(*items):
+    return {"searchPoiInfo": {"pois": {"poi": [_poi(*i) for i in items]}}}
+
+
+def test_name_match_comes_first_like_map_apps(monkeypatch):
+    """'부산대역'을 찾으면 시청 근처 교대역 출구가 아니라 부산대역이 맨 위."""
+    accuracy = _pois(("교대역 1번출구", 35.1960, 129.0805), ("교대역[부산1호선]", 35.1958, 129.0802),
+                     ("부산대역 3번출구", 35.2297, 129.0893), ("부산대학교", 35.2330, 129.0790),
+                     ("부산대역[부산1호선]", 35.2295, 129.0896), ("서울 부산대역 식당", 37.56, 126.97),
+                     ("부산대앞 버스정류장", 35.2300, 129.0880))
+    calls = []
+
+    def fake_get(url, params, headers, timeout):
+        calls.append(params["searchtypCd"])
+        return FakeResp(200, accuracy if params["searchtypCd"] == "A" else {})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    names = [p["name"] for p in sr.search_places("부산대역", "K")]
+    assert names[:2] == ["부산대역[부산1호선]", "부산대역 3번출구"]   # 역 → 출구 순
+    assert "서울 부산대역 식당" not in names                         # 부산 밖은 뺀다
+    assert names.index("교대역[부산1호선]") > names.index("부산대학교")
+    assert calls == ["A"]                                            # 6개 이상이라 보충 검색 안 함
+
+
+def test_bias_orders_same_name_by_distance_and_fallback_merges(monkeypatch):
+    far = (35.10, 129.03)     # 남포동 쪽
+    near = (35.23, 129.09)    # 장전동 쪽
+    a_res = _pois(("스타벅스 남포점", *far), ("스타벅스 부산대점", *near))
+    r_res = _pois(("스타벅스 장전역점", 35.2350, 129.0870), ("스타벅스 부산대점", *near))
+    seen_center = {}
+
+    def fake_get(url, params, headers, timeout):
+        if params["searchtypCd"] == "R":
+            seen_center["c"] = (params["centerLat"], params["centerLon"])
+            return FakeResp(200, r_res)
+        return FakeResp(200, a_res)
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    names = [p["name"] for p in sr.search_places("스타벅스", "K", bias=(35.23, 129.08))]
+    assert names[0] in ("스타벅스 부산대점", "스타벅스 장전역점") and names[-1] == "스타벅스 남포점"
+    assert len(names) == 3                                   # 중복 없이 합침
+    assert seen_center["c"] == ("35.23", "129.08")           # 보충 검색은 다른 쪽 지점 근처에서
+
+
+def test_relevance_tiers():
+    assert sr.relevance("부산대역 [1호선]", "부산대역") == 0
+    assert sr.relevance("부산대학교 정문", "부산대") == 1
+    assert sr.relevance("국립부산대학교", "부산대") == 2
+    assert sr.relevance("교대역 1번출구", "부산대역") == 5
+    assert sr.relevance("부산대역 1번출구", "부산대역 1번출구") == 0

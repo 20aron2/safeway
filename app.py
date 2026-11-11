@@ -132,13 +132,15 @@ def run_place_search(which: str) -> None:
     if not keyword or keyword == (S.get(f"{which}_name") or ""):
         return
     try:
-        found = cached_places(keyword, get_secret("TMAP_APP_KEY"))
+        other = S.end if which == "start" else S.start   # 다른 쪽 지점 근처를 먼저 (지도 앱처럼)
+        bias = (round(other[0], 2), round(other[1], 2)) if other else None
+        found = cached_places(keyword, get_secret("TMAP_APP_KEY"), bias)
     except sr.SearchError as e:
         S[f"search_msg_{which}"] = str(e)
         return
     if not found:
         S[f"search_msg_{which}"] = texts.SEARCH_EMPTY
-    S[f"found_{which}"] = found[:6]
+    S[f"found_{which}"] = found[:sr.SHOW_RESULTS]
     S.found_seq += 1
 
 
@@ -230,8 +232,8 @@ def cached_ask(payload_json, question, api_key, model):
 
 
 @st.cache_data(ttl=3600, show_spinner="장소를 찾는 중…")
-def cached_places(keyword, app_key):
-    return sr.search_places(keyword, app_key)
+def cached_places(keyword, app_key, bias=None):
+    return sr.search_places(keyword, app_key, bias=bias)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
