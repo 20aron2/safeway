@@ -198,6 +198,7 @@
       center: LL(d.center), width: "100%", height: height + "px", zoom: d.zoom || 16
     });
     map.addListener("click", function (evt) {
+      if (Date.now() - lastTap < 800) return;   // 방금 터치로 처리한 누르기 (같은 동작이 두 번 오는 기기)
       var ll = evt && evt.latLng;
       if (!ll) return;
       var lat = typeof ll.lat === "function" ? ll.lat() : ll._lat;
@@ -205,8 +206,60 @@
       if (typeof lat !== "number" || typeof lng !== "number") return;
       setValue({ last_clicked: { lat: lat, lng: lng }, ts: Date.now() });
     });
+    listenTaps(document.getElementById("map_div"));
     document.getElementById("locate").addEventListener("click", toggleLocate);
     setHeight(height);
+  }
+
+  // ------------------------------------------------ 휴대폰 '톡 누르기'
+  // 휴대폰에서는 TMAP 지도가 손가락 누르기를 click으로 넘겨 주지 않는 경우가 있어서 직접 알아본다.
+  // 끌기(지도 이동)와 두 번 톡(확대)은 위치 지정으로 보지 않는다.
+  var lastTap = 0, lastTapEnd = 0, tapSeq = 0;
+
+  function num(ll) {
+    return [typeof ll.lat === "function" ? ll.lat() : ll._lat, typeof ll.lng === "function" ? ll.lng() : ll._lng];
+  }
+
+  // 화면 위치(px) → 위도·경도. 지도 화면의 네 모서리 좌표로 비례 계산 (위도는 메르카토르 투영에 맞춤)
+  function pointToLatLng(div, clientX, clientY) {
+    var b = map.getBounds && map.getBounds();
+    if (!b) return null;
+    var ne = num(b.getNorthEast ? b.getNorthEast() : b._ne), sw = num(b.getSouthWest ? b.getSouthWest() : b._sw);
+    var r = div.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    var merc = function (lat) { return Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360)); };
+    var yN = merc(ne[0]), yS = merc(sw[0]);
+    var ym = yN - (clientY - r.top) / r.height * (yN - yS);
+    var lat = (2 * Math.atan(Math.exp(ym)) - Math.PI / 2) * 180 / Math.PI;
+    var lng = sw[1] + (clientX - r.left) / r.width * (ne[1] - sw[1]);
+    return (isFinite(lat) && isFinite(lng)) ? [lat, lng] : null;
+  }
+
+  function listenTaps(div) {
+    var t0 = null;
+    var opts = { capture: true, passive: true };
+    div.addEventListener("touchstart", function (e) {
+      t0 = (e.touches && e.touches.length === 1)
+        ? { x: e.touches[0].clientX, y: e.touches[0].clientY, at: Date.now() } : null;
+    }, opts);
+    div.addEventListener("touchmove", function (e) {
+      if (!t0 || !e.touches || !e.touches.length) return;
+      if (Math.abs(e.touches[0].clientX - t0.x) > 10 || Math.abs(e.touches[0].clientY - t0.y) > 10) t0 = null;
+    }, opts);
+    div.addEventListener("touchend", function () {
+      var s = t0; t0 = null;
+      if (!s || Date.now() - s.at > 600) return;          // 길게 누르기·끌기는 무시
+      var now = Date.now(), seq = ++tapSeq;
+      lastTap = now;
+      if (now - lastTapEnd < 350) { tapSeq++; lastTapEnd = 0; return; }   // 두 번 톡 = 확대
+      lastTapEnd = now;
+      setTimeout(function () {
+        if (seq !== tapSeq) return;
+        lastTapEnd = 0;                                   // 기다리던 톡이 끝났다
+        var p = pointToLatLng(div, s.x, s.y);
+        if (p) setValue({ last_clicked: { lat: p[0], lng: p[1] }, ts: Date.now() });
+      }, 350);
+    }, opts);
   }
 
   var pending = null, waiting = false, tries = 0;
