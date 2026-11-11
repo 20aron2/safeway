@@ -116,3 +116,74 @@ def test_outside_ratio_in_payload_and_percent_allowed():
     assert not explain.ai_text_is_grounded("경로 B는 35%가 데이터가 없는 지역이에요.", pj)
     basic = explain.build_basic_explanation(scored, 50, False)
     assert "경로 A의 35%는 시설 데이터가 없는 지역" in basic
+
+
+# ---------------------------------------------------------------- AI에게 물어보기
+from core import recommend as _rec
+
+
+def _scored_for_ask():
+    rows = [
+        {"route_id": "A", "distance_m": 800.0, "duration_s": 600, "radius_m": 50, "cctv": 2, "bell": 0,
+         "total": 2, "per_km": 2.5, "light": 10, "light_per_km": 12.5, "longest_gap_m": 300.0,
+         "near_ids": [], "longest_dark_m": 150.0, "outside_ratio": 0.0},
+        {"route_id": "B", "distance_m": 950.0, "duration_s": 720, "radius_m": 50, "cctv": 6, "bell": 2,
+         "total": 8, "per_km": 8.4, "light": 30, "light_per_km": 31.6, "longest_gap_m": 90.0,
+         "near_ids": [], "longest_dark_m": 40.0, "outside_ratio": 0.35},
+    ]
+    return _rec.score_routes(rows, "facility")
+
+
+def test_quick_kind_matches_example_questions():
+    assert explain.quick_kind("왜 이 경로를 추천했어?") == "why"
+    assert explain.quick_kind(" 왜 이 경로를 추천했어 ") == "why"
+    assert explain.quick_kind("비상벨 많은 길?") is None
+
+
+def test_quick_answers_use_computed_numbers_only():
+    sc = _scored_for_ask()
+    assert sc["recommended_id"] == "B"
+    for kind in explain.QUICK_QUESTIONS:
+        text = explain.quick_answer(kind, sc, 50, "안전시설 접근성 우선", False)
+        assert text and "경로" in text
+    fast = explain.quick_answer("fast", sc, 50, "x", False)
+    assert "가장 빠른 길은 **경로 A**" in fast and "150m" in fast and "약 2분" in fast
+    dark = explain.quick_answer("dark", sc, 50, "x", False)
+    assert "**경로 B**" in dark and "경로 A 150m" in dark
+    why = explain.quick_answer("why", sc, 50, "안전시설 접근성 우선", False)
+    assert "'안전시설 접근성 우선'" in why and "**경로 B**(95점)" in why
+    trust = explain.quick_answer("trust", sc, 50, "x", False)
+    assert "경로 B의 35%" in trust and "112" in trust
+
+
+def test_quick_dark_without_light_data():
+    sc = _scored_for_ask()
+    for r in sc["rows"]:
+        r["longest_dark_m"] = None
+    assert "비교할 수 없어요" in explain.quick_answer("dark", sc, 50, "x", False)
+
+
+def test_ask_ai_grounding_and_failures():
+    sc = _scored_for_ask()
+    payload = explain.build_ai_payload(sc, [{"id": "A", "label": "a"}, {"id": "B", "label": "b"}], 50, "x", False)
+    ok = lambda pj, q, k, m: "경로 B는 반경 안 비상벨이 2곳으로 더 많아요."  # noqa: E731
+    assert explain.ask_ai("비상벨 많은 길?", payload, "K", "m", caller=ok) == (ok("", "", "", ""), None)
+    # 지어낸 숫자 → 쓰지 않음
+    bad = lambda pj, q, k, m: "경로 B는 범죄가 40% 적어요."  # noqa: E731
+    text, issue = explain.ask_ai("범죄는?", payload, "K", "m", caller=bad)
+    assert text is None and "숫자" in issue
+    # 사용자가 질문에 쓴 숫자를 되풀이하는 건 괜찮다
+    echo = lambda pj, q, k, m: "300m라는 기준은 안심길 데이터로는 판단할 수 없어요."  # noqa: E731
+    assert explain.ask_ai("300m 넘게 어두운 길 있어?", payload, "K", "m", caller=echo)[0]
+    # 키 없음, 호출 실패
+    assert explain.ask_ai("q", payload, None, "m") == (None, "Gemini 키 없음")
+    def boom(*a):
+        raise TimeoutError
+    assert explain.ask_ai("q", payload, "K", "m", caller=boom)[1] == "Gemini 호출 실패 (TimeoutError)"
+    # 질문 길이 제한
+    seen = {}
+    def spy(pj, q, k, m):
+        seen["q"] = q
+        return "경로 B를 추천했어요."
+    explain.ask_ai("가" * 500, payload, "K", "m", caller=spy)
+    assert len(seen["q"]) == explain.ASK_MAX_CHARS

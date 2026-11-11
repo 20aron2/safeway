@@ -12,9 +12,9 @@
 from __future__ import annotations
 
 MODES = {
-    "shortest": {"label": "최단거리 우선", "w_dist": 1.0, "w_fac": 0.0},
-    "balanced": {"label": "거리·시설 균형", "w_dist": 0.5, "w_fac": 0.5},
-    "facility": {"label": "안전시설 접근성 우선", "w_dist": 0.3, "w_fac": 0.7},
+    "shortest": {"label": "최단거리 우선", "short": "최단", "w_dist": 1.0, "w_fac": 0.0},
+    "balanced": {"label": "거리·시설 균형", "short": "균형", "w_dist": 0.5, "w_fac": 0.5},
+    "facility": {"label": "안전시설 접근성 우선", "short": "시설 우선", "w_dist": 0.3, "w_fac": 0.7},
 }
 DEFAULT_MODE = "balanced"
 

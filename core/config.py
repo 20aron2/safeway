@@ -10,7 +10,7 @@ DATA_REGION = "부산"
 REGION_CENTER = (35.1796, 129.0756)
 REGION_RADIUS_KM = 30
 DEFAULT_ZOOM = 16  # 도보 경로가 잘 보이는 확대 수준
-MAP_HEIGHT_PX = 460
+MAP_HEIGHT_PX = 500
 # 기본 지도: "tmap"(TMAP 웹 지도, TMAP 키 필요) 또는 "vworld"(브이월드, 키 없으면 OpenStreetMap)
 MAP_PROVIDER = "tmap"
 MAP_TILES = "OpenStreetMap"  # 브이월드 키가 없을 때 쓰는 기본 지도
@@ -42,6 +42,9 @@ DEMO_WALK_SPEED_MPS = 1.1
 # 시설 공백 구간 분석 간격(m)과 지도에 그릴 최소 길이(m)
 GAP_SAMPLE_STEP_M = 10
 GAP_DRAW_MIN_M = 100
+# '보안등 없는 구간': 보안등이 이 거리 안에 하나도 없는 연속 구간 (빛이 닿는다고 가정한 임의의 거리)
+LIGHT_REACH_M = 30
+DARK_DRAW_MIN_M = 50     # 이보다 짧은 구간은 지도에 그리지 않는다
 
 # 실제 공공데이터 정리 파일 (STEP 3에서 생성). 이 파일이 있으면 시설은 실제 데이터를 쓴다.
 PUBLIC_FACILITIES_PATH = PROJECT_ROOT / "data" / "processed" / "facilities_busan.csv"

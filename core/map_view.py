@@ -43,7 +43,7 @@ def _police_icon() -> folium.DivIcon:
 def build_map(start=None, end=None, start_name=None, end_name=None, routes=None, selected_id=None,
               facilities: pd.DataFrame | None = None, near_ids=(),
               vworld_key: str | None = None, gap_segments=(), police=(),
-              night: bool = False) -> folium.Map:
+              night: bool = False, dark_segments=()) -> folium.Map:
     routes = routes or []
     points = [p for p in (start, end) if p] + [c for r in routes for c in r["coords"]]
     center = points[0] if len(points) == 1 else config.DEFAULT_CENTER
@@ -61,6 +61,13 @@ def build_map(start=None, end=None, start_name=None, end_name=None, routes=None,
     else:
         m = folium.Map(location=center, zoom_start=config.DEFAULT_ZOOM,
                        tiles=config.MAP_TILES, control_scale=True)
+
+    # 보안등 없는 구간: 경로 아래에 깔리는 넓은 회색 띠
+    for seg in dark_segments:
+        folium.PolyLine(
+            seg["coords"], color="#4B5563", weight=16, opacity=0.5,
+            tooltip=f"보안등 없는 구간 {fmt_distance(seg['length_m'])}",
+        ).add_to(m)
 
     # 경로: 선택한 경로를 마지막에 그려서 맨 위에 보이게
     color_of = {r["id"]: config.ROUTE_COLORS[i % len(config.ROUTE_COLORS)] for i, r in enumerate(routes)}

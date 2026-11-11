@@ -16,6 +16,8 @@ analyze_route()는 경로 하나와 시설 표를 받아 아래 결과를 돌려
         "longest_gap_m": 320.0, # 반경 안에 시설이 하나도 없는 가장 긴 연속 구간
         "gap_segments": [{"length_m": 320.0, "coords": [...]}, ...],  # 지도 표시용 (100m 이상)
         "near_ids": [...],      # 반경 안 시설 id 목록 (지도 강조용)
+        "longest_dark_m": 80.0, # 30m 안에 보안등이 없는 가장 긴 구간 (보안등 데이터가 없으면 None)
+        "dark_segments": [...], # 지도 표시용 (50m 이상)
     }
 """
 from __future__ import annotations
@@ -72,8 +74,9 @@ def outside_ratio(coords, coverage, step_m: float = 20.0) -> float:
 
 
 def analyze_route(route: dict, facilities: pd.DataFrame, radius_m: float,
-                  coverage: frozenset | None = None) -> dict:
+                  coverage: frozenset | None = None, light_coverage: frozenset | None = None) -> dict:
     coords = route["coords"]
+    dark = dark_runs(coords, facilities, light_coverage)
 
     # 1차: 경로를 감싼 사각형(+반경) 안의 시설만 후보로
     cand = filter_bbox(facilities, bbox(coords, margin_m=radius_m)) if len(facilities) else facilities
@@ -117,12 +120,37 @@ def analyze_route(route: dict, facilities: pd.DataFrame, radius_m: float,
         "near_ids": list(seen.keys()),
         # 시설 데이터가 없는 지역을 지나는 비율. 높으면 시설 수가 실제보다 적게 나온다.
         "outside_ratio": outside_ratio(coords, coverage),
+        # 보안등 없는 구간 (분석 반경과 상관없이 LIGHT_REACH_M 기준)
+        "longest_dark_m": None if dark is None else max((length for length, _ in dark), default=0.0),
+        "dark_segments": [{"length_m": length, "coords": seg} for length, seg in (dark or [])
+                          if length >= config.DARK_DRAW_MIN_M],
     }
 
 
+def dark_runs(coords, facilities: pd.DataFrame, light_coverage: frozenset | None = None,
+              reach_m: float = config.LIGHT_REACH_M) -> list[tuple[float, list]] | None:
+    """보안등이 reach_m 안에 하나도 없는 연속 구간들. 보안등 데이터가 없으면 None.
+
+    보안등 데이터 범위(light_coverage) 밖의 지점은 '모름'이라 어두운 구간으로 세지 않는다.
+    """
+    if not len(facilities) or not (facilities["kind"] == "light").any():
+        return None
+    lights = facilities[facilities["kind"] == "light"]
+    cand = filter_bbox(lights, bbox(coords, margin_m=reach_m))
+    near = list(cand[distances_to_route(cand["lat"].to_numpy(), cand["lon"].to_numpy(), coords)
+                     <= reach_m].itertuples(index=False)) if len(cand) else []
+    unknown = None
+    if light_coverage:
+        unknown = lambda p: cell_of(p[0], p[1]) not in light_coverage  # noqa: E731
+    return gap_runs(coords, near, reach_m, unknown=unknown)
+
+
 def gap_runs(coords, near_facilities, radius_m: float,
-             step_m: float = config.GAP_SAMPLE_STEP_M) -> list[tuple[float, list]]:
-    """반경 안에 시설이 하나도 없는 연속 구간들을 (길이 m, 좌표 목록)으로 돌려준다."""
+             step_m: float = config.GAP_SAMPLE_STEP_M, unknown=None) -> list[tuple[float, list]]:
+    """반경 안에 시설이 하나도 없는 연속 구간들을 (길이 m, 좌표 목록)으로 돌려준다.
+
+    unknown(지점) 이 참인 지점은 데이터가 없어 판단하지 않는다 (구간을 끊는다).
+    """
     samples = densify(coords, step_m)
     if near_facilities:
         s = np.asarray(samples, dtype=float)
@@ -133,6 +161,8 @@ def gap_runs(coords, near_facilities, radius_m: float,
         covered = list((d2 <= radius_m * radius_m).any(axis=1))
     else:
         covered = [False] * len(samples)
+    if unknown is not None:
+        covered = [c or unknown(p) for c, p in zip(covered, samples)]
     runs: list[tuple[float, list]] = []
     length, seg = 0.0, []
     for i in range(1, len(samples)):

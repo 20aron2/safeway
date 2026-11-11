@@ -242,3 +242,40 @@ def test_coverage_and_outside_ratio():
     assert analysis.outside_ratio(route["coords"], None) == 0.0         # 범위 정보 없음 → 경고 안 함
     m = analysis.analyze_route(route, inside, 50, coverage=coverage_cells(far))
     assert m["outside_ratio"] == 1.0
+
+
+def test_dark_segments_from_lights():
+    from core import config
+    from core.facilities import coverage_cells
+    route = _straight_route(400)
+    # 보안등 데이터가 아예 없으면 '모름' (None) → 0m로 오해하지 않게
+    m = analysis.analyze_route(route, _facility_df([("c1", "cctv", PNU)]), 50)
+    assert m["longest_dark_m"] is None and m["dark_segments"] == []
+    # 앞쪽 200m에만 보안등 → 뒤쪽 약 170m(30m 빛 거리 제외)가 어두운 구간
+    lights = [(f"l{i}", "light", offset_point(*PNU, x, 5)) for i, x in enumerate(range(0, 201, 40))]
+    m = analysis.analyze_route(route, _facility_df(lights), 50)
+    assert m["longest_dark_m"] == pytest.approx(400 - 200 - config.LIGHT_REACH_M, abs=12)
+    assert len(m["dark_segments"]) == 1
+    assert m["dark_segments"][0]["coords"][-1] == pytest.approx(route["coords"][-1])
+    # 분석 반경과 상관없다 (보안등 기준 거리는 고정)
+    assert analysis.analyze_route(route, _facility_df(lights), 100)["longest_dark_m"] == m["longest_dark_m"]
+    # 보안등 데이터 범위 밖은 어둡다고 하지 않는다
+    far = _facility_df([("lx", "light", offset_point(*PNU, 0, 5000))])
+    m2 = analysis.analyze_route(route, far, 50, light_coverage=coverage_cells(far))
+    assert m2["longest_dark_m"] == 0.0
+
+
+def test_dark_numbers_reach_explanation_and_payload():
+    rows = [{**_metric("A", 1000, 3, 0), "longest_dark_m": 120.0},
+            {**_metric("B", 1100, 5, 1), "longest_dark_m": 0.0}]
+    sc = recommend.score_routes(rows, "balanced")
+    text = explain.build_basic_explanation(sc, 50, False)
+    assert "보안등이 없는 가장 긴 구간: A 120m, B 0m" in text
+    routes = [{"id": "A", "label": "a"}, {"id": "B", "label": "b"}]
+    payload = explain.build_ai_payload(sc, routes, 50, "균형", False)
+    assert payload["경로들"][0]["보안등이_30m안에_없는_최장구간"] == "120m"
+
+
+def test_light_reach_constant_matches_config():
+    from core import config
+    assert explain.LIGHT_REACH_M == config.LIGHT_REACH_M

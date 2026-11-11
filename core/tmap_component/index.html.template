@@ -117,6 +117,10 @@
       marker([f.lat, f.lon], lightIcon(f.on), s, s, f.name);
     });
 
+    (d.dark || []).forEach(function (g) {            // 보안등 없는 구간: 경로 아래 넓은 회색 띠
+      line(g.coords, "#4B5563", 16, 0.5);
+    });
+
     (d.routes || []).forEach(function (r) {          // 경로: 선택한 경로를 마지막(맨 위)에
       line(r.coords, r.color, r.selected ? 7 : 4, r.selected ? 0.95 : 0.35);
     });

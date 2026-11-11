@@ -2,15 +2,16 @@
 
 실행:  streamlit run app.py
 
-화면 흐름
-1. 장소 검색, 현재 위치, 지도 클릭 중 하나로 출발지·도착지 지정
-2. [경로 탐색] → 경로 후보 생성 → 시설 데이터 준비
-3. 경로별 시설 분석 → 점수 계산 → 카드·추천·설명 표시
+화면 흐름 (지도 앱처럼)
+1. 위 검색 패널: 장소 검색 / 📍 현재 위치 / 지도 클릭으로 출발·도착 지정 (⇅로 바꾸기)
+2. 두 곳이 정해지면 자동으로 경로 후보 생성 → 시설 데이터 준비
+3. 지도 아래: 옆으로 넘기는 경로 카드, AI 추천 설명, 자세히(공유·점수·데이터)
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from urllib.parse import urlencode
+from html import escape
+from urllib.parse import quote, urlencode
 
 import streamlit as st
 from streamlit_folium import st_folium
@@ -20,6 +21,8 @@ from core import facilities as fac
 from core import routes as rt
 from core import search as sr
 from core.geo import bbox, haversine_m
+
+KST = timezone(timedelta(hours=9))
 
 try:  # 현재 위치·브라우저 시각 읽기 부품 (없어도 앱은 동작)
     from streamlit_js_eval import get_geolocation, streamlit_js_eval
@@ -31,7 +34,7 @@ from core.map_view import build_map
 st.set_page_config(
     page_title=f"{texts.APP_NAME} · {texts.APP_NAME_EN}",
     page_icon="🛡️",
-    layout="centered",
+    layout="wide",
     initial_sidebar_state="collapsed",
 )
 
@@ -44,6 +47,8 @@ DEFAULT_STATE = {
     "found_start": [],    # 장소 검색 결과
     "found_end": [],
     "found_seq": 0,
+    "q_start": "",        # 검색칸 글자
+    "q_end": "",
     "search_msg_start": None,
     "search_msg_end": None,
     "locating": False,    # '현재 위치를 출발지로'를 누른 뒤 위치를 기다리는 중
@@ -54,6 +59,8 @@ DEFAULT_STATE = {
     "error": None,
     "data_warning": None,
     "search_id": 0,
+    "pending_q": None,    # AI에게 보낼 질문 (질문칸·예시 질문에서)
+    "qa": [],             # (질문, 답, 출처) 최근 4개
 }
 for key, value in DEFAULT_STATE.items():
     st.session_state.setdefault(key, value)
@@ -73,9 +80,18 @@ def set_point(which: str, point, name: str) -> None:
     S[which] = point
     S[f"{which}_name"] = name
     S[f"found_{which}"] = []
+    S[f"search_msg_{which}"] = None
+    S[f"q_sync_{which}"] = True   # 다음 실행 때 검색칸 글자를 장소 이름으로 맞춘다
     S.result = None
     S.error = None
     st.query_params.clear()  # 이전 경로의 공유 주소는 더 이상 맞지 않는다
+
+
+def clear_point(which: str) -> None:
+    S[which] = S[f"{which}_name"] = None
+    S[f"q_sync_{which}"] = True
+    S.result = None
+    S.error = None
 
 
 def handle_click(point: tuple[float, float]) -> None:
@@ -85,7 +101,7 @@ def handle_click(point: tuple[float, float]) -> None:
         set_point("end", point, texts.MAP_PICK_NAME)
     else:  # 둘 다 있으면 새로 시작
         set_point("start", point, texts.MAP_PICK_NAME)
-        S.end = S.end_name = None
+        clear_point("end")
 
 
 def reset() -> None:
@@ -94,21 +110,41 @@ def reset() -> None:
     S.found_start, S.found_end = [], []
     S.search_msg_start = S.search_msg_end = None
     S.locating = False
+    S.q_sync_start = S.q_sync_end = True
     st.query_params.clear()
 
 
-def run_place_search(which: str, keyword: str) -> None:
+def swap_points() -> None:
+    """출발·도착 바꾸기 (⇅)."""
+    S.start, S.end = S.end, S.start
+    S.start_name, S.end_name = S.end_name, S.start_name
+    S.found_start, S.found_end = [], []
+    S.q_sync_start = S.q_sync_end = True
+    S.result = S.error = None
+    st.query_params.clear()
+
+
+def run_place_search(which: str) -> None:
+    """검색칸에서 엔터를 치면 실행된다."""
+    keyword = (S.get(f"q_{which}") or "").strip()
     S[f"search_msg_{which}"] = None
     S[f"found_{which}"] = []
+    if not keyword or keyword == (S.get(f"{which}_name") or ""):
+        return
     try:
-        found = cached_places(keyword.strip(), get_secret("TMAP_APP_KEY"))
+        found = cached_places(keyword, get_secret("TMAP_APP_KEY"))
     except sr.SearchError as e:
         S[f"search_msg_{which}"] = str(e)
         return
     if not found:
         S[f"search_msg_{which}"] = texts.SEARCH_EMPTY
-    S[f"found_{which}"] = found
+    S[f"found_{which}"] = found[:6]
     S.found_seq += 1
+
+
+def choose_place(which: str, idx: int) -> None:
+    place = S[f"found_{which}"][idx]
+    set_point(which, (place["lat"], place["lon"]), place["name"])
 
 
 def start_locating() -> None:
@@ -116,25 +152,42 @@ def start_locating() -> None:
     S.loc_msg = None
 
 
-def place_picker(which: str, label: str, placeholder: str) -> None:
-    """장소 검색창 + 후보 선택."""
-    with st.form(f"form_{which}", border=False):
-        keyword = st.text_input(f"{label} 검색", placeholder=placeholder, key=f"q_{which}")
-        submitted = st.form_submit_button("검색")
-    if submitted:
-        run_place_search(which, keyword)
+def submit_question() -> None:
+    """질문칸에서 엔터 → 다음 실행에서 답을 만든다."""
+    q = (S.get("ask_text") or "").strip()
+    S.ask_text = ""
+    if q:
+        S.pending_q = q[:explain.ASK_MAX_CHARS]
+
+
+def pick_quick(widget_key: str) -> None:
+    kind = S.get(widget_key)
+    S[widget_key] = None
+    if kind:
+        S.pending_q = explain.QUICK_QUESTIONS[kind]
+
+
+def search_row(which: str, side_button) -> None:
+    """지도 앱처럼 '● 출발 [검색칸] [버튼]' 한 줄 + 후보 목록."""
+    c_label, c_input, c_btn = st.columns([1.15, 6, 1], vertical_alignment="center")
+    with c_label:
+        st.markdown(ui.point_label(which), unsafe_allow_html=True)
+    with c_input:
+        st.text_input(
+            "출발지" if which == "start" else "도착지", key=f"q_{which}", label_visibility="collapsed",
+            placeholder=texts.SEARCH_START_PLACEHOLDER if which == "start" else texts.SEARCH_END_PLACEHOLDER,
+            on_change=run_place_search, args=(which,),
+        )
+    with c_btn:
+        side_button()
     if S[f"search_msg_{which}"]:
         st.caption(S[f"search_msg_{which}"])
     found = S[f"found_{which}"]
     if found:
-        idx = st.selectbox(
-            f"{label} 후보", options=list(range(len(found))),
-            format_func=lambda i: f"{found[i]['name']} · {found[i]['address']}",
-            key=f"pick_{which}_{S.found_seq}", label_visibility="collapsed",
-        )
-        place = found[idx]
-        st.button(f"이곳을 {label}로", key=f"set_{which}", on_click=set_point,
-                  args=(which, (place["lat"], place["lon"]), place["name"]))
+        with st.container(key=f"cands_{which}"):
+            for i, place in enumerate(found):
+                st.button(f"📍 {place['name']} · {place['address']}", key=f"cand_{which}_{S.found_seq}_{i}",
+                          on_click=choose_place, args=(which, i))
 
 
 @st.cache_data(show_spinner=False)
@@ -144,7 +197,9 @@ def load_public(path_str: str, modified: float):
 
 @st.cache_data(show_spinner=False)
 def load_coverage(path_str: str, modified: float):
-    return fac.coverage_cells(load_public(path_str, modified))
+    df = load_public(path_str, modified)
+    # (전체 시설 범위, 보안등 범위) — 보안등 범위 밖은 '어두운 구간'으로 세지 않는다
+    return fac.coverage_cells(df), fac.coverage_cells(df[df["kind"] == "light"])
 
 
 def prepare_facilities(routes: list[dict]):
@@ -156,16 +211,22 @@ def prepare_facilities(routes: list[dict]):
             mtime = path.stat().st_mtime
             df = load_public(str(path), mtime)
             coords = [c for r in routes for c in r["coords"]]
-            return "public", fac.filter_bbox(df, bbox(coords, margin_m=150)), load_coverage(str(path), mtime)
+            coverage, light_coverage = load_coverage(str(path), mtime)
+            return "public", fac.filter_bbox(df, bbox(coords, margin_m=150)), coverage, light_coverage
         except Exception as e:  # 파일 형식 문제 → 데모로 대체하고 알려준다
             S.data_warning = f"공공데이터 파일을 읽지 못해 가상 시설로 대신했어요: {e}"
-    return "demo", fac.make_demo_facilities(routes, S.start), None
+    return "demo", fac.make_demo_facilities(routes, S.start), None, None
 
 
 @st.cache_data(ttl=86400, show_spinner="AI 설명을 만드는 중…")
 def cached_gemini(payload_json, api_key, model):
     """같은 계산 결과면 Gemini를 다시 부르지 않는다 (슬라이더를 움직일 때마다 호출 방지)."""
     return explain.call_gemini(payload_json, api_key, model)
+
+
+@st.cache_data(ttl=86400, show_spinner="AI가 답을 쓰는 중…")
+def cached_ask(payload_json, question, api_key, model):
+    return explain.call_gemini_ask(payload_json, question, api_key, model)
 
 
 @st.cache_data(ttl=3600, show_spinner="장소를 찾는 중…")
@@ -193,7 +254,7 @@ def run_search() -> None:
     except rt.RouteError as e:
         S.result, S.error = None, str(e)
         return
-    facility_source, facilities, coverage = prepare_facilities(routes)
+    facility_source, facilities, coverage, light_coverage = prepare_facilities(routes)
     police = []
     if tmap_key:  # 지구대·파출소는 참고 정보라 실패해도 경로 비교는 계속한다
         mid = ((S.start[0] + S.end[0]) / 2, (S.start[1] + S.end[1]) / 2)
@@ -207,10 +268,16 @@ def run_search() -> None:
         "route_source": route_source,
         "facility_source": facility_source,
         "coverage": coverage,
+        "light_coverage": light_coverage,
         "police": police,
     }
     S.error = None
     S.search_id += 1
+
+
+def _place_word(name: str | None, fallback: str) -> str:
+    """메시지에 쓸 장소 이름. '지도에서 고른 위치'처럼 이름이 없는 곳은 '출발지'·'도착지'로."""
+    return fallback if not name or name in (texts.MAP_PICK_NAME, texts.SHARED_NAME) else name
 
 
 def _parse_point(text: str | None):
@@ -222,12 +289,22 @@ def _parse_point(text: str | None):
     return (round(lat, 6), round(lon, 6)) if 33 <= lat <= 39 and 124 <= lon <= 132 else None
 
 
-def share_url() -> str | None:
-    """지금 출발·도착이 담긴 주소. 주소창의 서버 이름으로 만든다."""
+def share_params(route_id: str | None = None) -> dict:
+    params = {"from": f"{S.start[0]},{S.start[1]}", "to": f"{S.end[0]},{S.end[1]}"}
+    # 검색한 장소 이름만 넣는다 ('현재 위치'는 받는 사람에게는 틀린 말이라 뺀다 → 링크도 짧아진다)
+    for key, name in (("fn", S.start_name), ("tn", S.end_name)):
+        if _place_word(name, "") and name != texts.MY_LOCATION_NAME:
+            params[key] = name
+    if route_id:
+        params["r"] = route_id
+    return params
+
+
+def share_url(route_id: str | None = None) -> str | None:
+    """지금 출발·도착(과 고른 경로)이 담긴 주소. 주소창의 서버 이름으로 만든다."""
     if S.start is None or S.end is None:
         return None
-    query = urlencode({"from": f"{S.start[0]},{S.start[1]}", "to": f"{S.end[0]},{S.end[1]}",
-                       "fn": S.start_name or "", "tn": S.end_name or ""})
+    query = urlencode(share_params(route_id))
     try:
         host = st.context.headers.get("host")
     except Exception:
@@ -243,21 +320,29 @@ if not S.link_loaded:
     S.link_loaded = True
     qp_start, qp_end = _parse_point(st.query_params.get("from")), _parse_point(st.query_params.get("to"))
     if qp_start and qp_end:
-        set_point("start", qp_start, st.query_params.get("fn") or texts.SHARED_NAME)
-        set_point("end", qp_end, st.query_params.get("tn") or texts.SHARED_NAME)
+        qp = dict(st.query_params)  # set_point가 주소를 지우므로 먼저 읽어 둔다
+        set_point("start", qp_start, qp.get("fn") or texts.SHARED_NAME)
+        set_point("end", qp_end, qp.get("tn") or texts.SHARED_NAME)
         run_search()
         S.loc_msg = texts.SHARED_OPENED
+        if S.result:  # 보낸 사람이 고른 경로를 먼저 보여 준다
+            S.shared_pick = (S.search_id, qp.get("r"))
 
+
+# 검색칸 글자를 지정된 장소 이름에 맞춘다 (위젯을 만들기 전에만 바꿀 수 있다)
+for _w in ("start", "end"):
+    if S.get(f"q_sync_{_w}"):
+        S[f"q_{_w}"] = S.get(f"{_w}_name") or ""
+        S[f"q_sync_{_w}"] = False
 
 # ---------------------------------------------------------------- 화면: 상단
 ui.inject_css()
-ui.header()
+tmap_key = get_secret("TMAP_APP_KEY")
+vworld_key = get_secret("VWORLD_API_KEY")
 
-result = S.result
-expected_fac_source = result["facility_source"] if result else (
+expected_fac_source = S.result["facility_source"] if S.result else (
     "public" if config.PUBLIC_FACILITIES_PATH.exists() else "demo")
-expected_route_source = result["route_source"] if result else (
-    "tmap" if get_secret("TMAP_APP_KEY") else "demo")
+expected_route_source = S.result["route_source"] if S.result else ("tmap" if tmap_key else "demo")
 fac_counts = None
 if expected_fac_source == "public":
     try:
@@ -265,21 +350,77 @@ if expected_fac_source == "public":
         fac_counts = load_public(str(_p), _p.stat().st_mtime)["kind"].value_counts().to_dict()
     except Exception:
         fac_counts = None
-ui.data_banner(expected_route_source, expected_fac_source, fac_counts)
+is_demo, data_md = ui.banner_text(expected_route_source, expected_fac_source, fac_counts)
+st.markdown(ui.header_html(is_demo), unsafe_allow_html=True)
 
-# 장소 검색 (TMAP 키가 있을 때)
-if get_secret("TMAP_APP_KEY"):
-    with st.container(border=True):
-        col_s, col_e = st.columns(2)
-        with col_s:
-            place_picker("start", "출발지", texts.SEARCH_START_PLACEHOLDER)
+# ---------------------------------------------------------------- 검색 패널
+with st.container(border=True, key="searchbox"):
+    if tmap_key:
+        def _locate_btn():
             if get_geolocation is not None:
-                st.button(texts.MY_LOCATION_BUTTON, on_click=start_locating)
-        with col_e:
-            place_picker("end", "도착지", texts.SEARCH_END_PLACEHOLDER)
+                st.button("📍", key="btn_locate", help=texts.MY_LOCATION_BUTTON, on_click=start_locating)
 
-# '현재 위치를 출발지로': 브라우저가 위치를 알려줄 때까지 기다린다
-if S.locating and get_geolocation is not None:
+        def _swap_btn():
+            st.button("⇅", key="btn_swap", help="출발·도착 바꾸기", on_click=swap_points,
+                      disabled=S.start is None and S.end is None)
+
+        search_row("start", _locate_btn)
+        search_row("end", _swap_btn)
+    else:  # 장소 검색이 없으면 지도 클릭으로만 지정
+        for _w in ("start", "end"):
+            _name = S.get(f"{_w}_name")
+            st.markdown(f'{ui.point_label(_w)}<div class="sw-hint">{escape(_name) if _name else "지도에서 눌러 지정"}</div>',
+                        unsafe_allow_html=True)
+    c_hint, c_reset = st.columns([5, 1.3], vertical_alignment="center")
+    with c_hint:
+        hint = (texts.PICK_GUIDE_START if S.start is None else
+                texts.PICK_GUIDE_END if S.end is None else texts.PICK_GUIDE_READY)
+        st.markdown(f'<div class="sw-hint">{hint}</div>', unsafe_allow_html=True)
+    with c_reset:
+        st.button("↺ " + texts.RESET_BUTTON, key="btn_reset", on_click=reset,
+                  disabled=S.start is None and S.end is None)
+
+# ---------------------------------------------------------------- 추천 기준 + 설정
+if streamlit_js_eval is not None and S.get("browser_hour") is None:
+    # '밤'은 보는 사람 기준이라 브라우저 시각을 쓴다 (보이지 않는 부품)
+    _h = streamlit_js_eval(js_expressions="new Date().getHours()", key="browser_hour_js")
+    if isinstance(_h, (int, float)):
+        S.browser_hour = int(_h)
+_hour = S.get("browser_hour")
+if _hour is None:
+    _hour = datetime.now(KST).hour  # 아직 모르면 한국 시간
+if not S.get("night_touched"):  # 직접 바꾸기 전까지는 시각에 맞춰 자동
+    S["night"] = _hour >= config.NIGHT_HOURS[0] or _hour < config.NIGHT_HOURS[1]
+S.setdefault("radius", config.DEFAULT_RADIUS_M)
+
+providers = (["tmap"] if tmap_key else []) + ["vworld"]
+with st.container(key="modebar"):
+    c_mode, c_set = st.columns([4, 1.4], vertical_alignment="center")
+    with c_mode:
+        mode = st.segmented_control(
+            "추천 기준", options=list(recommend.MODES), label_visibility="collapsed",
+            format_func=lambda k: recommend.MODES[k]["short"],
+            default=recommend.DEFAULT_MODE, key="mode",
+        ) or recommend.DEFAULT_MODE
+    with c_set:
+        # 라벨을 고정해 둬야 반경을 바꿀 때 설정 창이 닫히지 않는다
+        with st.popover("⚙️ 설정"):
+            radius = st.slider(
+                "분석 반경 (m)", config.RADIUS_OPTIONS_M[0], config.RADIUS_OPTIONS_M[1], step=10, key="radius",
+                help="경로에서 이 거리 안에 있는 시설을 셉니다. 검증된 '안전 반경'이 아닌 분석용 값이에요.",
+            )
+            default_provider = config.MAP_PROVIDER if config.MAP_PROVIDER in providers else providers[0]
+            provider = st.segmented_control(
+                "지도", options=providers, default=default_provider, key="map_provider",
+                format_func=lambda p: {"tmap": "TMAP 지도",
+                                       "vworld": "브이월드 지도" if vworld_key else "기본 지도"}[p],
+            ) or default_provider
+            night = False
+            if provider == "tmap" or vworld_key:  # 야간 지도는 TMAP과 브이월드에서만
+                night = st.toggle("🌙 야간 지도", key="night", on_change=lambda: S.update(night_touched=True))
+
+# ---------------------------------------------------------------- 알림
+if S.locating and get_geolocation is not None:   # '현재 위치를 출발지로': 위치를 기다린다
     loc = get_geolocation()
     if not loc:
         st.caption(texts.LOCATING_WAIT)
@@ -303,144 +444,161 @@ if S.locating and get_geolocation is not None:
         st.rerun()
 if S.loc_msg:
     st.info(S.loc_msg)
+if is_demo:
+    st.caption("⚠️ " + data_md.replace("\n- ", " · ").lstrip("- "))
 
-col_guide, col_reset = st.columns([4, 1], vertical_alignment="center")
-with col_guide:
-    ui.pick_status(S.start, S.end, S.start_name, S.end_name)
-with col_reset:
-    st.button(texts.RESET_BUTTON, on_click=reset, disabled=S.start is None and S.end is None)
-
-map_slot = st.container()   # 지도는 결과 계산 후 이 자리에 그린다
-legend_slot = st.container()
-
-st.button(texts.SEARCH_BUTTON, type="primary", on_click=run_search,
-          disabled=S.start is None or S.end is None)
-
+# 두 곳이 정해지면 바로 경로를 찾는다 (지도 앱처럼 버튼 없이)
+if S.start and S.end and S.result is None and S.error is None:
+    with st.spinner("경로를 찾는 중…"):
+        run_search()
 if S.error:
     st.error(S.error)
 if S.data_warning:
     st.warning(S.data_warning)
 
-# ---------------------------------------------------------------- 화면: 결과
+map_slot = st.container()   # 지도는 결과 계산 후 이 자리에 그린다
+legend_slot = st.container()
+
+# ---------------------------------------------------------------- 결과
+result = S.result
 selected_id = None
 near_ids: list[str] = []
 gap_segments: list = []
+dark_segments: list = []
 police: list = []
-radius = None
 
 if result:
     routes = result["routes"]
     demo_fac = result["facility_source"] == "demo"
-    st.divider()
-    st.subheader("경로 비교")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        mode = st.segmented_control(
-            "추천 기준", options=list(recommend.MODES),
-            format_func=lambda k: recommend.MODES[k]["label"],
-            default=recommend.DEFAULT_MODE, key="mode",
-        ) or recommend.DEFAULT_MODE
-    with c2:
-        radius = st.slider(
-            "분석 반경 (m)", config.RADIUS_OPTIONS_M[0], config.RADIUS_OPTIONS_M[1],
-            config.DEFAULT_RADIUS_M, step=10,
-            help="경로에서 이 거리 안에 있는 시설을 셉니다. 검증된 '안전 반경'이 아닌 분석용 값이에요.",
-        )
 
     memo_key = (S.search_id, radius)
     if S.get("metrics_key") != memo_key:  # 같은 탐색·반경이면 다시 계산하지 않는다
-        S.metrics = [analysis.analyze_route(r, result["facilities"], radius, result.get("coverage"))
-                     for r in routes]
+        S.metrics = [analysis.analyze_route(r, result["facilities"], radius, result.get("coverage"),
+                                            result.get("light_coverage")) for r in routes]
         S.metrics_key = memo_key
     metrics = S.metrics
     scored = recommend.score_routes(metrics, mode)
     rec_id = scored["recommended_id"]
 
+    route_ids = [r["id"] for r in routes]
+    shared_sid, shared_rid = S.get("shared_pick") or (None, None)
+    default_pick = shared_rid if shared_sid == S.search_id and shared_rid in route_ids else rec_id
     if len(routes) > 1:
         selected_id = st.segmented_control(
-            "지도에서 강조할 경로", options=[r["id"] for r in routes],
-            format_func=lambda i: f"경로 {i}" + (" ★" if i == rec_id else ""),
-            default=rec_id, key=f"pick_{S.search_id}",
+            "지도에서 강조할 경로", options=route_ids, label_visibility="collapsed",
+            format_func=lambda i: f"경로 {i}" + (" ★추천" if i == rec_id else ""),
+            default=default_pick, key=f"pick_{S.search_id}",
         ) or rec_id
     else:
         selected_id = rec_id
-        st.info("서로 다른 경로가 하나뿐이라 그 경로만 보여드려요.")
+        st.caption("서로 다른 경로가 하나뿐이라 그 경로만 보여드려요.")
 
     rows_by_id = {row["route_id"]: row for row in scored["rows"]}
     near_ids = rows_by_id[selected_id]["near_ids"]
     gap_segments = rows_by_id[selected_id]["gap_segments"]
+    dark_segments = rows_by_id[selected_id].get("dark_segments") or []
     police = result.get("police") or []
 
-    cols = st.columns(len(routes))
-    for i, (col, route) in enumerate(zip(cols, routes)):
-        with col:
-            ui.route_card(rows_by_id[route["id"]], route,
-                          config.ROUTE_COLORS[i % len(config.ROUTE_COLORS)],
-                          recommended=route["id"] == rec_id,
-                          selected=route["id"] == selected_id,
-                          facilities_are_demo=demo_fac,
-                          nearest_police=analysis.nearest_place(route["coords"], police))
+    # 선택한 경로 카드를 맨 앞에 (휴대폰에서 넘기지 않아도 보이게)
+    ordered = sorted(enumerate(routes), key=lambda ir: ir[1]["id"] != selected_id)
+    ui.route_strip([
+        ui.route_card_html(rows_by_id[route["id"]], route, config.ROUTE_COLORS[i % len(config.ROUTE_COLORS)],
+                           recommended=route["id"] == rec_id, selected=route["id"] == selected_id,
+                           facilities_are_demo=demo_fac,
+                           nearest_police=analysis.nearest_place(route["coords"], police))
+        for i, route in ordered
+    ])
 
-    with st.container(border=True):
-        st.markdown(f"#### 추천: 경로 {rec_id}")
-        st.caption(f"추천 기준: {recommend.MODES[mode]['label']} · 분석 반경 {radius}m")
-        basic_text = explain.build_basic_explanation(scored, radius, demo_fac)
-        gemini_key = get_secret("GEMINI_API_KEY")
-        payload = explain.build_ai_payload(scored, routes, radius,
-                                           recommend.MODES[mode]["label"], demo_fac)
-        ai_text, ai_issue = explain.get_ai_explanation(
-            payload, gemini_key, config.GEMINI_MODEL, caller=cached_gemini)
+    # 귀가 알림: 가족·친구에게 보낼 글 (상대방은 앱 설치 없이 링크로 경로를 본다)
+    sel_route = next(r for r in routes if r["id"] == selected_id)
+    arrive = datetime.now(KST) + timedelta(seconds=sel_route["duration_s"])
+    notice = texts.HOME_NOTICE.format(
+        start=_place_word(S.start_name, "출발지"), end=_place_word(S.end_name, "도착지"), route=selected_id,
+        label=sel_route["label"], duration=explain.fmt_duration(sel_route["duration_s"]),
+        distance=explain.fmt_distance(sel_route["distance_m"]),
+        arrive=f"{'오전' if arrive.hour < 12 else '오후'} {(arrive.hour % 12) or 12}:{arrive.minute:02d}",
+        url=share_url(selected_id) or "",
+    )
+    with st.popover("📨 귀가 알림 보내기"):
+        st.caption(texts.HOME_NOTICE_HELP)
+        st.code(notice, language=None, wrap_lines=True)
+        st.link_button("💬 문자로 보내기", "sms:?&body=" + quote(notice))
+        st.caption(texts.SHARE_NOTE)
+
+    basic_text = explain.build_basic_explanation(scored, radius, demo_fac)
+    gemini_key = get_secret("GEMINI_API_KEY")
+    mode_label = recommend.MODES[mode]["label"]
+    payload = explain.build_ai_payload(scored, routes, radius, mode_label, demo_fac)
+    ai_text, ai_issue = explain.get_ai_explanation(payload, gemini_key, config.GEMINI_MODEL, caller=cached_gemini)
+    with st.expander(f"💬 추천: 경로 {rec_id} · {mode_label} · 반경 {radius}m", expanded=True):
         st.markdown(ai_text or basic_text)
         if ai_text:
             st.caption("설명 출처: Gemini · Python이 계산한 숫자만 사용하도록 확인했어요")
-            with st.expander("Python 계산 결과로 만든 기본 설명 보기"):
-                st.markdown(basic_text)
         else:
             reason = f" (AI 설명을 쓰지 못한 이유: {ai_issue})" if gemini_key else ""
             st.caption("설명 출처: Python 계산 결과로 자동 생성한 기본 설명" + reason)
 
-    # 경로 공유: 주소창에도 같은 값을 넣어 두면 브라우저 '공유' 버튼으로도 보낼 수 있다
-    st.query_params.update({"from": f"{S.start[0]},{S.start[1]}", "to": f"{S.end[0]},{S.end[1]}",
-                            "fn": S.start_name or "", "tn": S.end_name or ""})
-    with st.expander("🔗 이 경로 공유하기"):
-        st.code(share_url() or "", language=None)
-        st.caption(texts.SHARE_NOTE)
+        # ---- AI에게 물어보기: 같은 탐색·기준·반경일 때만 대화를 이어 간다
+        qa_key = (S.search_id, mode, radius)
+        if S.get("qa_key") != qa_key:
+            S.qa_key, S.qa = qa_key, []
+        if S.get("pending_q"):
+            question, S.pending_q = S.pending_q, None
+            kind = explain.quick_kind(question)
+            text, issue = explain.ask_ai(question, payload, gemini_key, config.GEMINI_MODEL,
+                                         caller=lambda pj, q, k, m: cached_ask(pj, q, k, m))
+            if text:
+                source = "Gemini · 계산된 숫자만 썼는지 확인했어요"
+            elif kind:
+                text = explain.quick_answer(kind, scored, radius, mode_label, demo_fac)
+                source = "Python 계산 결과로 만든 답변" + (f" (AI를 쓰지 못한 이유: {issue})" if gemini_key else "")
+            elif not gemini_key:
+                text, source = texts.ASK_NO_KEY, ""
+            else:
+                text, source = texts.ASK_FAILED.format(issue=issue), ""
+            S.qa = (S.qa + [(question, text, source)])[-4:]
+        st.markdown(f"**{texts.ASK_TITLE}**")
+        for question, text, source in S.qa:
+            with st.chat_message("user"):
+                st.markdown(question)
+            with st.chat_message("assistant", avatar="🛡️"):
+                st.markdown(text)
+                if source:
+                    st.caption(source)
+        quick_key = f"quick_{S.search_id}"
+        st.pills("예시 질문", options=list(explain.QUICK_QUESTIONS), key=quick_key,
+                 format_func=lambda k: explain.QUICK_QUESTIONS[k], label_visibility="collapsed",
+                 on_change=pick_quick, args=(quick_key,))
+        if gemini_key:
+            st.text_input("질문", key="ask_text", label_visibility="collapsed", max_chars=explain.ASK_MAX_CHARS,
+                          placeholder=texts.ASK_PLACEHOLDER, on_change=submit_question)
+            st.caption(texts.ASK_PRIVACY)
+        else:
+            st.caption(texts.ASK_NO_KEY)
 
-    with st.expander("점수는 어떻게 계산하나요?"):
-        st.markdown(recommend.formula_markdown(mode))
-    with st.expander("공공데이터로 알 수 없는 것"):
-        st.markdown("\n".join(f"- {item}" for item in texts.DATA_LIMITS))
+    # 경로 공유: 주소창에도 같은 값을 넣어 두면 브라우저 '공유' 버튼으로도 보낼 수 있다
+    st.query_params.update(share_params(selected_id))
+    with st.expander("🔗 공유 · 점수 계산 · 데이터 한계"):
+        t_share, t_score, t_basic, t_data, t_help = st.tabs(["공유", "점수 계산", "기본 설명", "데이터", "사용 방법"])
+        with t_share:
+            st.code(share_url(selected_id) or "", language=None)
+            st.caption(texts.SHARE_NOTE)
+        with t_score:
+            st.markdown(recommend.formula_markdown(mode))
+        with t_basic:
+            st.markdown(basic_text)
+        with t_data:
+            st.markdown(data_md)
+            st.markdown("**공공데이터로 알 수 없는 것**\n" + "\n".join(f"- {item}" for item in texts.DATA_LIMITS))
+        with t_help:
+            st.markdown(texts.HOW_TO_BODY)
+else:
+    with st.expander("ⓘ 사용 방법 · 데이터 출처"):
+        st.markdown(texts.HOW_TO_BODY)
+        st.markdown(data_md)
 
 # ---------------------------------------------------------------- 지도 (위에 비워 둔 자리)
 with map_slot:
-    vworld_key = get_secret("VWORLD_API_KEY")
-    tmap_key = get_secret("TMAP_APP_KEY")
-    c_map, c_night = st.columns([3, 2], vertical_alignment="bottom")
-    with c_map:
-        providers = (["tmap"] if tmap_key else []) + ["vworld"]
-        default_provider = config.MAP_PROVIDER if config.MAP_PROVIDER in providers else providers[0]
-        provider = st.segmented_control(
-            "지도 선택", options=providers, default=default_provider, key="map_provider",
-            format_func=lambda p: {"tmap": "TMAP 지도", "vworld": "브이월드 지도" if vworld_key else "기본 지도"}[p],
-        ) or default_provider
-    night = False
-    with c_night:
-        if provider == "tmap" or vworld_key:  # 야간 지도는 TMAP과 브이월드에서만
-            # '밤'은 보는 사람 기준이라 브라우저 시각을 쓴다. 아직 모르면 한국 시간으로.
-            if streamlit_js_eval is not None and S.get("browser_hour") is None:
-                h = streamlit_js_eval(js_expressions="new Date().getHours()", key="browser_hour_js")
-                if isinstance(h, (int, float)):
-                    S.browser_hour = int(h)
-            hour = S.get("browser_hour")
-            if hour is None:
-                hour = datetime.now(timezone(timedelta(hours=9))).hour
-            start_h, end_h = config.NIGHT_HOURS
-            if not S.get("night_touched"):  # 직접 바꾸기 전까지는 시각에 맞춰 자동
-                S["night"] = hour >= start_h or hour < end_h
-            night = st.toggle("🌙 야간 지도", key="night",
-                              on_change=lambda: S.update(night_touched=True))
-
     map_facilities = None
     if result:
         # 보안등은 수가 많아, 어느 경로든 반경 안에 든 것만 지도에 그린다 (휴대폰에서도 가볍게)
@@ -454,6 +612,7 @@ with map_slot:
         facilities=map_facilities,
         near_ids=near_ids,
         gap_segments=gap_segments,
+        dark_segments=dark_segments,
         police=police,
         night=night,
     )
@@ -468,10 +627,9 @@ with map_slot:
             map_data = st_folium(fmap, **map_kwargs)
 with legend_slot:
     has_lights = bool(result) and "light" in set(result["facilities"]["kind"])
-    ui.legend(radius, has_police=bool(police), has_gaps=bool(gap_segments), has_lights=has_lights)
+    ui.legend(radius if result else None, has_police=bool(police), has_gaps=bool(gap_segments),
+              has_lights=has_lights, has_dark=bool(dark_segments))
 
-with st.expander(texts.HOW_TO_TITLE):
-    st.markdown(texts.HOW_TO_BODY)
 ui.footer()
 
 # ---------------------------------------------------------------- 지도 클릭 처리
