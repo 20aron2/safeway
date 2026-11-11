@@ -151,3 +151,32 @@ def test_relevance_tiers():
     assert sr.relevance("국립부산대학교", "부산대") == 2
     assert sr.relevance("교대역 1번출구", "부산대역") == 5
     assert sr.relevance("부산대역 1번출구", "부산대역 1번출구") == 0
+
+
+def test_find_stores_keeps_only_store_brands(monkeypatch):
+    pois = _pois(("GS25 부산대점", 35.233, 129.085), ("CU 앞 주차장", 35.2331, 129.0851),
+                 ("CUBE 카페", 35.234, 129.086), ("CU장전역점", 35.237, 129.088),
+                 ("세븐일레븐 부산대점", 35.233, 129.085))
+    seen = []
+
+    def fake_get(url, params, headers, timeout):
+        seen.append((params["searchKeyword"], params["searchtypCd"], params["count"]))
+        return FakeResp(200, pois)
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    names = [p["name"] for p in sr.find_stores((35.23, 129.08), "K")]
+    assert names == ["GS25 부산대점", "CU장전역점"]          # 주차장·다른 가게·같은 자리 중복 제외
+    assert [k for k, _, _ in seen] == list(sr.STORE_KEYWORDS) and all(t == "R" and c == "50" for _, t, c in seen)
+
+
+def test_reverse_geocode(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp(
+        200, {"addressInfo": {"fullAddress": "부산광역시 금정구 장전동 1,부산광역시 금정구 부산대학로 63"}}))
+    assert sr.reverse_geocode(35.23, 129.08, "K") == "부산광역시 금정구 장전동 1"
+    monkeypatch.setattr(requests, "get", lambda *a, **k: FakeResp(500, {}))
+    assert sr.reverse_geocode(35.23, 129.08, "K") is None
+
+    def boom(*a, **k):
+        raise requests.ConnectionError
+    monkeypatch.setattr(requests, "get", boom)
+    assert sr.reverse_geocode(35.23, 129.08, "K") is None

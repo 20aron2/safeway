@@ -44,7 +44,8 @@ def load_public_facilities(path: Path) -> pd.DataFrame:
     df = df.dropna(subset=["lat", "lon"])
     df = df[df["kind"].isin(KINDS)]
     df = df.drop_duplicates(subset=["id"])
-    return df[COLUMNS].reset_index(drop=True)
+    extra = ["gu"] if "gu" in df.columns else []   # 구·군 ('데이터로 본 부산'에서 씀)
+    return df[COLUMNS + extra].reset_index(drop=True)
 
 
 def filter_bbox(df: pd.DataFrame, box: tuple[float, float, float, float]) -> pd.DataFrame:

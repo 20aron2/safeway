@@ -36,6 +36,7 @@ safeway/
 │   ├── analysis.py         경로 반경 안 시설 수, 밀도, 공백 구간
 │   ├── recommend.py        비교 점수와 추천 (규칙 기반)
 │   ├── explain.py          설명 문장 (기본 설명 / Gemini)
+│   ├── insights.py         '데이터로 본 부산' 구·군별 통계
 │   ├── map_view.py         folium 지도 그리기 (브이월드/OSM)
 │   ├── tmap_map.py         TMAP 웹 지도 부품 (Python 쪽)
 │   ├── tmap_component/     TMAP 웹 지도 부품 (HTML·JS 화면)
@@ -113,4 +114,5 @@ safeway/
 | 추가 4 | TMAP 웹 지도 (기본), 브이월드로 전환 가능 | 완료 |
 | 추가 5 | 부산 전역 데이터, 데이터 범위 경고, AI 숫자 검증 강화(문장·경로 단위) | 코드 완료, 실제 화면 확인 필요 |
 | 추가 6 | 지도 앱 스타일 화면, 보안등 없는 구간, AI에게 물어보기, 귀가 알림 메시지 | 코드 완료, 실제 화면 확인 필요 |
+| 추가 7 | 🚨 긴급(112 전화·문자), 🏪 경로 주변 편의점, 📊 데이터로 본 부산(`core/insights.py`) | 코드 완료, 실제 화면 확인 필요 |
 | STEP 6 | 배포(Streamlit Cloud), 모바일 점검, 발표 준비 | 마지막 |

@@ -193,3 +193,13 @@ def nearest_place(coords, places) -> dict | None:
         if best is None or d < best["dist_m"]:
             best = {"name": p["name"], "dist_m": d}
     return best
+
+
+def places_near_route(coords, places, radius_m: float) -> list[dict]:
+    """경로에서 radius_m 안에 있는 장소들 (편의점처럼 점수에 넣지 않는 참고 정보용)."""
+    if not places:
+        return []
+    lats = np.array([p["lat"] for p in places], dtype=float)
+    lons = np.array([p["lon"] for p in places], dtype=float)
+    dist = distances_to_route(lats, lons, coords)
+    return [p for p, d in zip(places, dist) if d <= radius_m]

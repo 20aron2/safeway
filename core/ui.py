@@ -50,6 +50,12 @@ header[data-testid="stHeader"], [data-testid="stToolbar"], #MainMenu, footer {di
 [class*="st-key-cands_"] button p {font-size:.85rem; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;}
 .sw-hint {font-size:.8rem; color:#6B7280; margin:.15rem 0 .1rem;}
 
+/* ---------- 머리말 줄: 제목 + 🚨 긴급 (휴대폰에서도 한 줄) */
+.st-key-headbar [data-testid="stHorizontalBlock"] {flex-wrap: nowrap !important; gap: .4rem;}
+.st-key-headbar [data-testid="stColumn"] {min-width: 0 !important; width: auto !important;}
+.st-key-headbar [data-testid="stPopover"] button {border-color:#FCA5A5; color:#B91C1C; font-weight:700;}
+@media (max-width: 640px) { .sw-sub {display:none;} }
+
 /* ---------- 지도 아래 범례 */
 .sw-legend {font-size:.76rem; color:#6B7280; margin:.15rem 0 .4rem; line-height:1.5;}
 
@@ -112,10 +118,12 @@ def point_label(which: str) -> str:
 
 
 def legend(radius_m: float | None, has_police: bool = False, has_gaps: bool = False,
-           has_lights: bool = False, has_dark: bool = False) -> None:
+           has_lights: bool = False, has_dark: bool = False, has_stores: bool = False) -> None:
     parts = ["📷 CCTV", "🔔 비상벨"]
     if has_lights:
         parts.append('<span style="color:#CA8A04">●</span> 보안등')
+    if has_stores:
+        parts.append("🏪 편의점(참고)")
     if has_police:
         parts.append("🚓 지구대·파출소(참고)")
     text = " · ".join(parts)
@@ -137,6 +145,8 @@ def route_card_html(row: dict, route: dict, color: str, recommended: bool, selec
     icons = [f"📷 {row['cctv']}", f"🔔 {row['bell']}"]
     if row.get("light") or row.get("light_per_km"):
         icons.append(f"💡 {row['light']}")
+    if row.get("stores") is not None:
+        icons.append(f"🏪 {row['stores']}")
     sub = [f"{prefix}CCTV·비상벨 1km당 {row['per_km']:.1f}곳",
            f"CCTV·비상벨 없는 최장 구간 {fmt_distance(row['longest_gap_m'])}"]
     if row.get("light_per_km"):

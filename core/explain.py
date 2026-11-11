@@ -142,6 +142,7 @@ def build_ai_payload(scored: dict, routes: list[dict], radius_m: float,
                if r.get("light_per_km") else {}),
             **({f"보안등이_{LIGHT_REACH_M}m안에_없는_최장구간": fmt_distance(r["longest_dark_m"])}
                if r.get("longest_dark_m") is not None else {}),
+            **({"반경안_편의점(참고, 점수에는 안 넣음)": f"{r['stores']}곳"} if r.get("stores") is not None else {}),
             "비교점수": f"{r['score']:.0f}점",
             **({"시설데이터_없는지역_비율": f"{r['outside_ratio'] * 100:.0f}%"}
                if r.get("outside_ratio", 0) >= COVERAGE_WARN_RATIO else {}),

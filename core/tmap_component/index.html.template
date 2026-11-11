@@ -133,6 +133,10 @@
       marker([f.lat, f.lon], emojiIcon(f.kind === "cctv" ? "📷" : "🔔", f.on ? 1 : 0.35), 28, 28, f.name);
     });
 
+    (d.stores || []).forEach(function (p) {          // 편의점 (참고)
+      marker([p.lat, p.lon], emojiIcon("🏪", 1, "#16A34A"), 26, 26, "🏪 " + p.name);
+    });
+
     (d.police || []).forEach(function (p) {          // 지구대·파출소
       marker([p.lat, p.lon], emojiIcon("🚓", 1, "#1D4ED8"), 28, 28, "🚓 " + p.name);
     });

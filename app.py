@@ -16,7 +16,7 @@ from urllib.parse import quote, urlencode
 import streamlit as st
 from streamlit_folium import st_folium
 
-from core import analysis, config, explain, recommend, texts, ui
+from core import analysis, config, explain, insights, recommend, texts, ui
 from core import facilities as fac
 from core import routes as rt
 from core import search as sr
@@ -51,7 +51,10 @@ DEFAULT_STATE = {
     "q_end": "",
     "search_msg_start": None,
     "search_msg_end": None,
-    "locating": False,    # '현재 위치를 출발지로'를 누른 뒤 위치를 기다리는 중
+    "locating": False,    # 위치를 기다리는 중 ('📍 현재 위치'나 '🚨 긴급'에서 누름)
+    "locate_for": "start",  # 받은 위치를 어디에 쓸지: 'start'(출발지) 또는 'sos'(긴급 문자)
+    "my_pos": None,       # 마지막으로 확인한 내 위치 (긴급 문자용, 저장하지 않음)
+    "my_addr": None,
     "loc_msg": None,
     "link_loaded": False, # 공유 링크로 들어왔을 때 한 번만 처리
     "last_click": None,   # 같은 클릭을 두 번 처리하지 않기 위한 기록
@@ -149,8 +152,9 @@ def choose_place(which: str, idx: int) -> None:
     set_point(which, (place["lat"], place["lon"]), place["name"])
 
 
-def start_locating() -> None:
+def start_locating(purpose: str = "start") -> None:
     S.locating = True
+    S.locate_for = purpose
     S.loc_msg = None
 
 
@@ -241,6 +245,21 @@ def cached_police(center, app_key):
     return sr.find_police(center, app_key)
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
+def cached_stores(center, radius_km, app_key):
+    return sr.find_stores(center, app_key, radius_km=radius_km)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def cached_address(lat, lon, app_key):
+    return sr.reverse_geocode(lat, lon, app_key)
+
+
+@st.cache_data(show_spinner=False)
+def cached_gu_summary(path_str: str, modified: float):
+    return insights.gu_summary(load_public(path_str, modified))
+
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def cached_routes(start, end, source, app_key):
     """같은 출발·도착은 1시간 동안 다시 묻지 않는다 (TMAP 무료 사용량 절약)."""
@@ -257,13 +276,20 @@ def run_search() -> None:
         S.result, S.error = None, str(e)
         return
     facility_source, facilities, coverage, light_coverage = prepare_facilities(routes)
-    police = []
-    if tmap_key:  # 지구대·파출소는 참고 정보라 실패해도 경로 비교는 계속한다
+    police, stores = [], None
+    if tmap_key:  # 지구대·파출소·편의점은 참고 정보라 실패해도 경로 비교는 계속한다
         mid = ((S.start[0] + S.end[0]) / 2, (S.start[1] + S.end[1]) / 2)
+        center = (round(mid[0], 3), round(mid[1], 3))
         try:
-            police = cached_police((round(mid[0], 3), round(mid[1], 3)), tmap_key)
+            police = cached_police(center, tmap_key)
         except sr.SearchError:
             police = []
+        # 경로 전체가 들어가는 반경 (TMAP은 km 단위 정수, 1~3km)
+        reach_m = max(haversine_m(*center, *c) for r in routes for c in r["coords"])
+        try:
+            stores = cached_stores(center, min(3, max(1, -(-int(reach_m + 100) // 1000))), tmap_key)
+        except sr.SearchError:
+            stores = None
     S.result = {
         "routes": routes,
         "facilities": facilities,
@@ -272,6 +298,7 @@ def run_search() -> None:
         "coverage": coverage,
         "light_coverage": light_coverage,
         "police": police,
+        "stores": stores,      # None = 찾지 못함(키 없음 등), [] = 근처에 없음
     }
     S.error = None
     S.search_id += 1
@@ -353,14 +380,31 @@ if expected_fac_source == "public":
     except Exception:
         fac_counts = None
 is_demo, data_md = ui.banner_text(expected_route_source, expected_fac_source, fac_counts)
-st.markdown(ui.header_html(is_demo), unsafe_allow_html=True)
+with st.container(key="headbar"):
+    c_head, c_sos = st.columns([5, 1.25], vertical_alignment="center")
+    with c_head:
+        st.markdown(ui.header_html(is_demo), unsafe_allow_html=True)
+    with c_sos:
+        with st.popover(texts.SOS_BUTTON):
+            st.link_button("📞 112 전화하기", "tel:112", type="primary")
+            if S.my_pos:
+                place = S.my_addr or f"위도 {S.my_pos[0]:.5f}, 경도 {S.my_pos[1]:.5f}"
+                sos_text = texts.SOS_SMS.format(place=place, lat=S.my_pos[0], lon=S.my_pos[1])
+            else:
+                sos_text = texts.SOS_SMS_NO_LOC
+            st.link_button("💬 112 문자 신고", "sms:112?&body=" + quote(sos_text))
+            st.caption(sos_text.replace("\n", "  \n"))
+            if get_geolocation is not None:
+                st.button(texts.SOS_LOCATE, key="btn_sos_locate", on_click=start_locating, args=("sos",))
+            st.caption(texts.SOS_HELP + " " + texts.SOS_LOC_NOTE)
 
 # ---------------------------------------------------------------- 검색 패널
 with st.container(border=True, key="searchbox"):
     if tmap_key:
         def _locate_btn():
             if get_geolocation is not None:
-                st.button("📍", key="btn_locate", help=texts.MY_LOCATION_BUTTON, on_click=start_locating)
+                st.button("📍", key="btn_locate", help=texts.MY_LOCATION_BUTTON, on_click=start_locating,
+                          args=("start",))
 
         def _swap_btn():
             st.button("⇅", key="btn_swap", help="출발·도착 바꾸기", on_click=swap_points,
@@ -439,10 +483,15 @@ if S.locating and get_geolocation is not None:   # '현재 위치를 출발지�
             S.loc_msg = texts.LOCATION_FAILED
         else:
             point = (round(float(lat), 6), round(float(lon), 6))
-            set_point("start", point, texts.MY_LOCATION_NAME)
-            far_km = haversine_m(*config.REGION_CENTER, *point) / 1000
-            if far_km > config.REGION_RADIUS_KM:
-                S.loc_msg = texts.LOCATION_FAR.format(km=far_km)
+            S.my_pos = point
+            S.my_addr = cached_address(round(point[0], 5), round(point[1], 5), tmap_key) if tmap_key else None
+            if S.locate_for == "sos":   # 긴급 문자에만 쓴다 (출발지는 그대로)
+                S.loc_msg = "🚨 긴급 문자에 지금 위치를 넣었어요. 맨 위 '🚨 긴급'을 다시 눌러 보내세요."
+            else:
+                set_point("start", point, texts.MY_LOCATION_NAME)
+                far_km = haversine_m(*config.REGION_CENTER, *point) / 1000
+                if far_km > config.REGION_RADIUS_KM:
+                    S.loc_msg = texts.LOCATION_FAR.format(km=far_km)
         st.rerun()
 if S.loc_msg:
     st.info(S.loc_msg)
@@ -468,6 +517,7 @@ near_ids: list[str] = []
 gap_segments: list = []
 dark_segments: list = []
 police: list = []
+near_stores = []
 
 if result:
     routes = result["routes"]
@@ -481,6 +531,13 @@ if result:
     metrics = S.metrics
     scored = recommend.score_routes(metrics, mode)
     rec_id = scored["recommended_id"]
+    all_stores = result.get("stores")
+    near_stores: list = []
+    if all_stores is not None:   # 편의점: 반경 안 개수만 카드에 (점수에는 넣지 않음)
+        for row, route in zip(scored["rows"], routes):
+            found = analysis.places_near_route(route["coords"], all_stores, radius)
+            row["stores"] = len(found)
+            near_stores += [p for p in found if p not in near_stores]
 
     route_ids = [r["id"] for r in routes]
     shared_sid, shared_rid = S.get("shared_pick") or (None, None)
@@ -616,6 +673,7 @@ with map_slot:
         gap_segments=gap_segments,
         dark_segments=dark_segments,
         police=police,
+        stores=near_stores,
         night=night,
     )
     if provider == "tmap":
@@ -630,7 +688,40 @@ with map_slot:
 with legend_slot:
     has_lights = bool(result) and "light" in set(result["facilities"]["kind"])
     ui.legend(radius if result else None, has_police=bool(police), has_gaps=bool(gap_segments),
-              has_lights=has_lights, has_dark=bool(dark_segments))
+              has_lights=has_lights, has_dark=bool(dark_segments), has_stores=bool(near_stores))
+
+# ---------------------------------------------------------------- 데이터로 본 부산
+summary = None
+if expected_fac_source == "public":
+    try:
+        _p = config.PUBLIC_FACILITIES_PATH
+        summary = cached_gu_summary(str(_p), _p.stat().st_mtime)
+    except Exception:
+        summary = None
+if summary is not None and len(summary):
+    with st.expander(texts.DATA_VIEW_TITLE):
+        for line in insights.insight_lines(summary):
+            st.markdown(f"- {line}")
+        kind = st.segmented_control("시설", options=list(insights.KIND_LABEL), default="cctv", key="dv_kind",
+                                    format_func=lambda k: insights.KIND_LABEL[k]) or "cctv"
+        per_area = st.toggle("면적(1㎢)당으로 보기", value=True, key="dv_per_area")
+        value_col = f"{kind}_km2" if per_area else kind
+        value_name = f"{insights.KIND_LABEL[kind]} " + ("1㎢당 (곳)" if per_area else "개수 (곳)")
+        chart_df = summary[["구", value_col]].rename(columns={value_col: value_name})
+        try:
+            import altair as alt
+            chart = (alt.Chart(chart_df).mark_bar(color="#2563EB", cornerRadiusEnd=3)
+                     .encode(x=alt.X(f"{value_name}:Q", title=value_name),
+                             y=alt.Y("구:N", sort="-x", title=None),
+                             tooltip=["구", value_name])
+                     .properties(height=420, width="container"))
+            st.altair_chart(chart)
+        except Exception:   # altair가 없으면 기본 막대그래프
+            st.bar_chart(chart_df.set_index("구"))
+        table = summary.rename(columns={"cctv": "CCTV", "bell": "비상벨", "light": "보안등", "면적": "면적(㎢)",
+                                        "cctv_km2": "CCTV/㎢", "bell_km2": "비상벨/㎢", "light_km2": "보안등/㎢"})
+        st.dataframe(table, hide_index=True)
+        st.caption(texts.DATA_VIEW_NOTE)
 
 ui.footer()
 

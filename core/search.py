@@ -113,7 +113,8 @@ def relevance(name: str, keyword: str) -> int:
 
 
 def search_places(keyword: str, app_key: str, center=config.REGION_CENTER,
-                  radius_km: int = SEARCH_RADIUS_KM, bias=None, sort: str = "match") -> list[dict]:
+                  radius_km: int = SEARCH_RADIUS_KM, bias=None, sort: str = "match",
+                  count: int = MAX_RESULTS) -> list[dict]:
     """장소 검색.
 
     sort="match" (화면 검색): 정확도순으로 받아 이름이 맞는 곳을 위로, 같은 수준이면 bias(다른 쪽 지점)에서
@@ -127,8 +128,8 @@ def search_places(keyword: str, app_key: str, center=config.REGION_CENTER,
             "reqCoordType": "WGS84GEO", "resCoordType": "WGS84GEO"}
 
     def near_search(around) -> list[dict]:
-        data = _request({**base, "searchtypCd": "R", "centerLat": str(around[0]), "centerLon": str(around[1]),
-                         "radius": str(radius_km)}, app_key)
+        data = _request({**base, "count": str(count), "searchtypCd": "R", "centerLat": str(around[0]),
+                         "centerLon": str(around[1]), "radius": str(radius_km)}, app_key)
         return parse_poi_response(data, center) if data else []
 
     if sort == "near":
@@ -169,3 +170,46 @@ def find_police(center, app_key: str, radius_km: int = 2) -> list[dict]:
                 seen.add(key)
                 found.append(p)
     return found
+
+
+# ---------------------------------------------------------------- 편의점 (밤에 들어갈 수 있는 곳, 참고용)
+STORE_KEYWORDS = ("GS25", "CU", "세븐일레븐", "이마트24")
+# 이름이 편의점 브랜드로 시작해야 편의점으로 본다 ('CU 앞 주차장' 같은 결과는 브랜드 뒤에 지점명이 아니라 걸러짐)
+STORE_NAME = re.compile(r"^(GS25|지에스25|CU|씨유|세븐일레븐|7-?ELEVEN|이마트24|emart24|미니스톱)"
+                        r"(\s|$|[\[(]|[가-힣])", re.IGNORECASE)
+STORE_SKIP = re.compile(r"(주차장|정류장|ATM|택배|본사|물류)")
+
+
+def find_stores(center, app_key: str, radius_km: int = 1) -> list[dict]:
+    """경로 주변 편의점 (TMAP 장소 검색, 브랜드 이름으로). 영업시간은 알 수 없다."""
+    found, seen = [], set()
+    for kw in STORE_KEYWORDS:
+        for p in search_places(kw, app_key, center=center, radius_km=radius_km, sort="near", count=50):
+            if not STORE_NAME.search(p["name"]) or STORE_SKIP.search(p["name"]):
+                continue
+            key = (round(p["lat"], 4), round(p["lon"], 4))
+            if key not in seen:
+                seen.add(key)
+                found.append(p)
+    return found
+
+
+# ---------------------------------------------------------------- 좌표 → 주소 (긴급 문자에 넣을 주소)
+REVERSE_URL = "https://apis.openapi.sk.com/tmap/geo/reversegeocoding"
+
+
+def reverse_geocode(lat: float, lon: float, app_key: str) -> str | None:
+    """좌표를 도로명·지번 주소로 바꾼다. 실패하면 None (문자에는 좌표만 넣는다)."""
+    import requests
+
+    params = {"version": "1", "lat": str(lat), "lon": str(lon), "coordType": "WGS84GEO", "addressType": "A10"}
+    try:
+        resp = requests.get(REVERSE_URL, params=params, headers={"appKey": app_key.strip(), "Accept": "application/json"},
+                            timeout=8)
+        if resp.status_code != 200 or not resp.content:
+            return None
+        info = (resp.json() or {}).get("addressInfo") or {}
+    except Exception:
+        return None
+    address = (info.get("fullAddress") or "").split(",")[0].strip()
+    return address or None

@@ -279,3 +279,41 @@ def test_dark_numbers_reach_explanation_and_payload():
 def test_light_reach_constant_matches_config():
     from core import config
     assert explain.LIGHT_REACH_M == config.LIGHT_REACH_M
+
+
+def test_places_near_route():
+    route = _straight_route(400)
+    places = [{"name": "가까움", "lat": offset_point(*PNU, 100, 20)[0], "lon": offset_point(*PNU, 100, 20)[1]},
+              {"name": "멂", "lat": offset_point(*PNU, 100, 200)[0], "lon": offset_point(*PNU, 100, 200)[1]}]
+    assert [p["name"] for p in analysis.places_near_route(route["coords"], places, 50)] == ["가까움"]
+    assert analysis.places_near_route(route["coords"], [], 50) == []
+
+
+def test_district_summary_and_insights():
+    import pandas as pd
+    from core import config, insights
+    df = pd.DataFrame([
+        {"id": "1", "kind": "cctv", "lat": 0, "lon": 0, "gu": "중구"},
+        {"id": "2", "kind": "cctv", "lat": 0, "lon": 0, "gu": "중구"},
+        {"id": "3", "kind": "bell", "lat": 0, "lon": 0, "gu": "중구"},
+        {"id": "4", "kind": "light", "lat": 0, "lon": 0, "gu": "기장군"},
+        {"id": "5", "kind": "cctv", "lat": 0, "lon": 0, "gu": "기장군"},
+        {"id": "6", "kind": "cctv", "lat": 0, "lon": 0, "gu": "서울시"},   # 부산 밖 → 무시
+    ])
+    s = insights.gu_summary(df)
+    assert len(s) == len(config.GU_AREA_KM2) == 16
+    jung = s[s["구"] == "중구"].iloc[0]
+    assert (jung["cctv"], jung["bell"], jung["light"]) == (2, 1, 0)
+    assert jung["cctv_km2"] == round(2 / config.GU_AREA_KM2["중구"], 1)
+    lines = insights.insight_lines(s)
+    assert lines[0].startswith("1㎢당 CCTV·비상벨은 **중구**")
+    assert any("공개된 안전비상벨 데이터가 0곳" in l for l in lines)
+    assert insights.gu_summary(df.drop(columns=["gu"])).empty   # 구 정보 없으면 빈 표
+
+
+def test_store_count_reaches_ai_payload():
+    rows = [{**_metric("A", 1000, 3, 0), "stores": 2}, _metric("B", 1100, 5, 1)]
+    sc = recommend.score_routes(rows, "balanced")
+    p = explain.build_ai_payload(sc, [{"id": "A", "label": "a"}, {"id": "B", "label": "b"}], 50, "균형", False)
+    assert p["경로들"][0]["반경안_편의점(참고, 점수에는 안 넣음)"] == "2곳"
+    assert not any("편의점" in k for k in p["경로들"][1])

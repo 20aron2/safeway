@@ -34,16 +34,20 @@ def _facility_icon(kind: str, emphasized: bool) -> folium.DivIcon:
     return folium.DivIcon(html=html, icon_size=(22, 22), icon_anchor=(11, 11), class_name="empty")
 
 
-def _police_icon() -> folium.DivIcon:
+def _badge_icon(emoji: str, color: str) -> folium.DivIcon:
     html = ('<div style="font-size:16px;line-height:24px;width:24px;text-align:center;background:#fff;'
-            'border:2px solid #1D4ED8;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,.35)">🚓</div>')
+            f'border:2px solid {color};border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,.35)">{emoji}</div>')
     return folium.DivIcon(html=html, icon_size=(28, 28), icon_anchor=(14, 14), class_name="empty")
+
+
+def _police_icon() -> folium.DivIcon:
+    return _badge_icon("🚓", "#1D4ED8")
 
 
 def build_map(start=None, end=None, start_name=None, end_name=None, routes=None, selected_id=None,
               facilities: pd.DataFrame | None = None, near_ids=(),
               vworld_key: str | None = None, gap_segments=(), police=(),
-              night: bool = False, dark_segments=()) -> folium.Map:
+              night: bool = False, dark_segments=(), stores=()) -> folium.Map:
     routes = routes or []
     points = [p for p in (start, end) if p] + [c for r in routes for c in r["coords"]]
     center = points[0] if len(points) == 1 else config.DEFAULT_CENTER
@@ -85,6 +89,11 @@ def build_map(start=None, end=None, start_name=None, end_name=None, routes=None,
             gap["coords"], color="#DC2626", weight=5, opacity=0.95, dash_array="2 10",
             tooltip=f"CCTV·비상벨 없는 구간 {fmt_distance(gap['length_m'])}",
         ).add_to(m)
+
+    # 편의점 (참고용, 점수에는 넣지 않음)
+    for p in stores:
+        folium.Marker([p["lat"], p["lon"]], icon=_badge_icon("🏪", "#16A34A"),
+                      tooltip=f"🏪 {p['name']}").add_to(m)
 
     # 지구대·파출소 (참고용, 점수에는 넣지 않음)
     for p in police:

@@ -29,7 +29,7 @@ def _pt(p) -> list[float]:
 
 def build_payload(start=None, end=None, start_name=None, end_name=None, routes=None,
                   selected_id=None, facilities: pd.DataFrame | None = None, near_ids=(),
-                  gap_segments=(), police=(), night: bool = False, dark_segments=()) -> dict:
+                  gap_segments=(), police=(), night: bool = False, dark_segments=(), stores=()) -> dict:
     routes = routes or []
     near = set(map(str, near_ids))
     # 선택한 경로를 마지막에 두어 맨 위에 그려지게 한다
@@ -65,6 +65,7 @@ def build_payload(start=None, end=None, start_name=None, end_name=None, routes=N
         "facilities": others,
         "lights": lights,
         "police": [{"lat": p["lat"], "lon": p["lon"], "name": p["name"]} for p in police],
+        "stores": [{"lat": p["lat"], "lon": p["lon"], "name": p["name"]} for p in stores],
         "fit_points": fit_points,
         "fit_key": fit_key,
         "night": bool(night),
