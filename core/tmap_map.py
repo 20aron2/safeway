@@ -27,6 +27,9 @@ def _pt(p) -> list[float]:
     return [round(float(p[0]), 6), round(float(p[1]), 6)]
 
 
+MAX_LIGHT_DOTS = 120
+
+
 def build_payload(start=None, end=None, start_name=None, end_name=None, routes=None,
                   selected_id=None, facilities: pd.DataFrame | None = None, near_ids=(),
                   gap_segments=(), police=(), night: bool = False, dark_segments=(), stores=(),
@@ -47,6 +50,10 @@ def build_payload(start=None, end=None, start_name=None, end_name=None, routes=N
             item = {"lat": round(float(row.lat), 6), "lon": round(float(row.lon), 6),
                     "kind": row.kind, "name": row.name or "", "on": str(row.id) in near}
             (lights if row.kind == "light" else others).append(item)
+
+    if len(lights) > MAX_LIGHT_DOTS:   # 점이 너무 많으면 고르게 솎아 낸다 (지도 확대·축소가 느려지지 않게)
+        step = len(lights) / MAX_LIGHT_DOTS
+        lights = [lights[int(i * step)] for i in range(MAX_LIGHT_DOTS)]
 
     fit_points = [_pt(p) for p in (start, end) if p] + [_pt(c) for r in routes for c in r["coords"]]
     fit_key = hashlib.md5(repr((fit_points[:2], fit_points[-1:] if fit_points else [],

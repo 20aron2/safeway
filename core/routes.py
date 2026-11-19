@@ -107,23 +107,27 @@ def fetch_tmap_routes(start: LatLon, end: LatLon, app_key: str) -> list[dict]:
         "startName": "start", "endName": "end",
         "reqCoordType": "WGS84GEO", "resCoordType": "WGS84GEO",
     }
-    routes, errors = [], []
-    for option, label in TMAP_OPTIONS:
+    def ask(option_label):
+        """옵션 하나를 물어본다 → (경로 또는 None, 오류 문장 또는 None)."""
+        option, label = option_label
         try:
             resp = requests.post(TMAP_URL, headers=headers,
                                  json={**base, "searchOption": str(option)}, timeout=10)
         except requests.RequestException:
-            errors.append("TMAP 서버에 연결하지 못했어요. 인터넷 연결을 확인해 주세요.")
-            continue
+            return None, "TMAP 서버에 연결하지 못했어요. 인터넷 연결을 확인해 주세요."
         if resp.status_code != 200:
-            errors.append(_tmap_error_message(resp))
-            if resp.status_code in (401, 403, 429):
-                break  # 키·사용량 문제는 다른 옵션도 똑같이 실패한다
-            continue
+            return None, _tmap_error_message(resp)
         try:
-            routes.append(parse_tmap_response(resp.json(), label))
+            return parse_tmap_response(resp.json(), label), None
         except (RouteError, ValueError) as e:
-            errors.append(str(e) if isinstance(e, RouteError) else "TMAP 응답을 읽지 못했어요.")
+            return None, str(e) if isinstance(e, RouteError) else "TMAP 응답을 읽지 못했어요."
+
+    # 세 옵션을 동시에 물어봐서 기다리는 시간을 줄인다 (결과 순서는 옵션 순서 그대로)
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=len(TMAP_OPTIONS)) as pool:
+        answers = list(pool.map(ask, TMAP_OPTIONS))
+    routes = [r for r, _ in answers if r]
+    errors = [e for _, e in answers if e]
     if not routes:
         raise RouteError(errors[0] if errors else "TMAP 경로를 받지 못했어요.")
     return routes

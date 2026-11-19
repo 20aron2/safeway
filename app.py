@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from html import escape
+import json
+from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import quote, urlencode
 
 import streamlit as st
@@ -266,30 +268,44 @@ def cached_routes(start, end, source, app_key):
     return rt.get_routes(start, end, source=source, app_key=app_key)
 
 
+_POOL = ThreadPoolExecutor(max_workers=4)
+_NEARBY_CACHE: dict = {}   # (중심, 반경, 키) → (지구대, 편의점). 같은 곳을 다시 찾을 때 바로 쓴다
+
+
+def _nearby_safe(center, store_km, app_key):
+    """다른 스레드에서 도는 함수라 Streamlit 기능(st.*)을 쓰지 않는다."""
+    key = (center, store_km, app_key)
+    if key not in _NEARBY_CACHE:
+        try:
+            _NEARBY_CACHE[key] = sr.find_nearby(center, app_key, store_radius_km=store_km)
+        except Exception:
+            return [], None
+        if len(_NEARBY_CACHE) > 200:
+            _NEARBY_CACHE.pop(next(iter(_NEARBY_CACHE)))
+    return _NEARBY_CACHE[key]
+
+
 def run_search() -> None:
     # TMAP 키가 있으면 실제 도보 경로, 없으면 데모(직선) 경로
     tmap_key = get_secret("TMAP_APP_KEY")
     route_source = "tmap" if tmap_key else "demo"
+    # 경로와 주변 장소(지구대·파출소·편의점)를 동시에 찾아서 기다리는 시간을 줄인다.
+    # 주변 장소는 참고 정보라 실패해도 경로 비교는 계속한다.
+    nearby_job = None
+    if tmap_key:
+        mid = ((S.start[0] + S.end[0]) / 2, (S.start[1] + S.end[1]) / 2)
+        center = (round(mid[0], 3), round(mid[1], 3))
+        # 경로가 다 들어갈 만한 반경: 직선거리의 절반보다 넉넉하게 (TMAP은 km 단위 정수, 1~3km)
+        reach_m = haversine_m(*S.start, *S.end) * 0.75 + 150
+        store_km = min(3, max(1, -(-int(reach_m) // 1000)))
+        nearby_job = _POOL.submit(_nearby_safe, center, store_km, tmap_key)
     try:
         routes = [dict(r) for r in cached_routes(S.start, S.end, route_source, tmap_key)]
     except rt.RouteError as e:
         S.result, S.error = None, str(e)
         return
     facility_source, facilities, coverage, light_coverage = prepare_facilities(routes)
-    police, stores = [], None
-    if tmap_key:  # 지구대·파출소·편의점은 참고 정보라 실패해도 경로 비교는 계속한다
-        mid = ((S.start[0] + S.end[0]) / 2, (S.start[1] + S.end[1]) / 2)
-        center = (round(mid[0], 3), round(mid[1], 3))
-        try:
-            police = cached_police(center, tmap_key)
-        except sr.SearchError:
-            police = []
-        # 경로 전체가 들어가는 반경 (TMAP은 km 단위 정수, 1~3km)
-        reach_m = max(haversine_m(*center, *c) for r in routes for c in r["coords"])
-        try:
-            stores = cached_stores(center, min(3, max(1, -(-int(reach_m + 100) // 1000))), tmap_key)
-        except sr.SearchError:
-            stores = None
+    police, stores = nearby_job.result() if nearby_job else ([], None)
     S.result = {
         "routes": routes,
         "facilities": facilities,
@@ -626,10 +642,19 @@ with sheet_box:
         gemini_key = get_secret("GEMINI_API_KEY")
         mode_label = recommend.MODES[mode]["label"]
         payload = explain.build_ai_payload(scored, routes, radius, mode_label, demo_fac)
-        ai_text, ai_issue = explain.get_ai_explanation(payload, gemini_key, config.GEMINI_MODEL, caller=cached_gemini)
+        # AI 설명은 몇 초 걸려서, 먼저 화면(지도·카드·기본 설명)을 보여 주고 그다음에 받아 온다
+        ai_key = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        ai_text, ai_issue, ai_waiting = None, None, False
+        if gemini_key and (S.get("ai_result") or (None,))[0] != ai_key:
+            ai_waiting = True
+            S.ai_pending = ai_key
+        elif gemini_key:
+            _, ai_text, ai_issue = S.ai_result
         with st.expander(f"💬 추천: 경로 {rec_id} · {mode_label} · 반경 {radius}m", expanded=True):
             st.markdown(ai_text or basic_text)
-            if ai_text:
+            if ai_waiting:
+                st.caption("⏳ AI 설명을 불러오는 중이에요… (위는 Python이 만든 기본 설명)")
+            elif ai_text:
                 st.caption("설명 출처: Gemini · Python이 계산한 숫자만 사용하도록 확인했어요")
             else:
                 reason = f" (AI 설명을 쓰지 못한 이유: {ai_issue})" if gemini_key else ""
@@ -698,10 +723,9 @@ with sheet_box:
     with map_slot:
         map_facilities = None
         if result:
-            # 보안등은 수가 많아, 어느 경로든 반경 안에 든 것만 지도에 그린다 (휴대폰에서도 가볍게)
+            # 보안등 점은 지금 고른 경로 주변만 그린다 (점이 많으면 휴대폰에서 지도 확대·축소가 느려진다)
             df_all = result["facilities"]
-            near_any = set().union(*(m["near_ids"] for m in S.get("metrics") or []))
-            map_facilities = df_all[(df_all["kind"] != "light") | df_all["id"].astype(str).isin(near_any)]
+            map_facilities = df_all[(df_all["kind"] != "light") | df_all["id"].astype(str).isin(set(near_ids))]
         map_parts = dict(
             start=S.start, end=S.end, start_name=S.start_name, end_name=S.end_name,
             routes=result["routes"] if result else None,
@@ -771,4 +795,12 @@ if clicked:
     if point != S.last_click:
         S.last_click = point
         handle_click(point)
+        st.rerun()
+
+# ---------------------------------------------------------------- AI 설명 받아 오기 (화면을 다 그린 뒤)
+if result and S.get("ai_pending"):
+    pending_key, S.ai_pending = S.ai_pending, None
+    if pending_key == ai_key and gemini_key:
+        S.ai_result = (pending_key, *explain.get_ai_explanation(payload, gemini_key, config.GEMINI_MODEL,
+                                                                caller=cached_gemini))
         st.rerun()

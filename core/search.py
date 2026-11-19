@@ -157,10 +157,10 @@ POLICE_KEYWORDS = ("지구대", "파출소")
 POLICE_NAME = re.compile(r"(지구대|파출소|치안센터|경찰서)\s*([\[(].*[\])])?$")
 
 
-def find_police(center, app_key: str, radius_km: int = 2) -> list[dict]:
+def find_police(center, app_key: str, radius_km: int = 2, keywords=None) -> list[dict]:
     """경로 주변 지구대·파출소를 TMAP 장소 검색으로 찾는다 (참고용, 점수에는 쓰지 않음)."""
     found, seen = [], set()
-    for kw in POLICE_KEYWORDS:
+    for kw in keywords or POLICE_KEYWORDS:
         for p in search_places(kw, app_key, center=center, radius_km=radius_km, sort="near"):
             # '지구대 앞 식당' 같은 엉뚱한 결과를 거른다
             if not POLICE_NAME.search(p["name"]):
@@ -180,10 +180,10 @@ STORE_NAME = re.compile(r"^(GS25|지에스25|CU|씨유|세븐일레븐|7-?ELEVEN
 STORE_SKIP = re.compile(r"(주차장|정류장|ATM|택배|본사|물류)")
 
 
-def find_stores(center, app_key: str, radius_km: int = 1) -> list[dict]:
+def find_stores(center, app_key: str, radius_km: int = 1, keywords=None) -> list[dict]:
     """경로 주변 편의점 (TMAP 장소 검색, 브랜드 이름으로). 영업시간은 알 수 없다."""
     found, seen = [], set()
-    for kw in STORE_KEYWORDS:
+    for kw in keywords or STORE_KEYWORDS:
         for p in search_places(kw, app_key, center=center, radius_km=radius_km, sort="near", count=50):
             if not STORE_NAME.search(p["name"]) or STORE_SKIP.search(p["name"]):
                 continue
@@ -192,6 +192,41 @@ def find_stores(center, app_key: str, radius_km: int = 1) -> list[dict]:
                 seen.add(key)
                 found.append(p)
     return found
+
+
+def find_nearby(center, app_key: str, store_radius_km: int = 1) -> tuple[list[dict], list[dict] | None]:
+    """지구대·파출소와 편의점을 한꺼번에 찾는다 → (지구대 목록, 편의점 목록 또는 None).
+
+    검색어 6개를 동시에 물어봐서, 하나씩 물을 때보다 훨씬 빨리 끝난다. 일부가 실패해도 나머지는 쓴다.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    def one(job):
+        kind, kw = job
+        try:
+            if kind == "police":
+                return find_police(center, app_key, keywords=(kw,))
+            return find_stores(center, app_key, radius_km=store_radius_km, keywords=(kw,))
+        except SearchError:
+            return None
+
+    jobs = [("police", kw) for kw in POLICE_KEYWORDS] + [("store", kw) for kw in STORE_KEYWORDS]
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        answers = list(pool.map(one, jobs))
+
+    def merge(kind):
+        parts = [a for (k, _), a in zip(jobs, answers) if k == kind]
+        if all(a is None for a in parts):
+            return None
+        out, seen = [], set()
+        for p in (p for a in parts if a for p in a):
+            key = (round(p["lat"], 4), round(p["lon"], 4))
+            if key not in seen:
+                seen.add(key)
+                out.append(p)
+        return out
+
+    return merge("police") or [], merge("store")
 
 
 # ---------------------------------------------------------------- 좌표 → 주소 (긴급 문자에 넣을 주소)

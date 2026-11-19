@@ -49,23 +49,23 @@ def test_parse_without_route_raises():
 
 def test_fetch_sends_lon_lat_and_options(monkeypatch):
     calls = []
-    offsets = iter([0.0, 0.003, 0.0])  # 세 번째(대로 우선)는 첫 번째와 같은 경로
+    offsets = {"10": 0.0, "0": 0.003, "4": 0.0}  # 세 번째(대로 우선)는 첫 번째와 같은 경로
 
-    def fake_post(url, headers, json, timeout):
+    def fake_post(url, headers, json, timeout):   # 세 옵션을 동시에 부르므로 호출 순서는 정해져 있지 않다
         calls.append((headers["appKey"], json))
-        return FakeResp(200, sample_response(next(offsets)))
+        return FakeResp(200, sample_response(offsets[json["searchOption"]]))
 
     monkeypatch.setattr(requests, "post", fake_post)
     routes = rt.get_routes(START, END, source="tmap", app_key=" KEY ")
     assert calls[0][0] == "KEY"
     body = calls[0][1]
     assert (body["startX"], body["startY"]) == ("129.0846", "35.2316")
-    assert [c[1]["searchOption"] for c in calls] == ["10", "0", "4"]
+    assert sorted(c[1]["searchOption"] for c in calls) == ["0", "10", "4"]
     assert [r["id"] for r in routes] == ["A", "B"]          # 같은 경로 하나 제거
     assert [r["label"] for r in routes] == ["TMAP 최단거리", "TMAP 추천"]
 
 
-def test_bad_key_gives_clear_message_and_stops(monkeypatch):
+def test_bad_key_gives_clear_message(monkeypatch):
     calls = []
 
     def fake_post(*a, **k):
@@ -75,7 +75,7 @@ def test_bad_key_gives_clear_message_and_stops(monkeypatch):
     monkeypatch.setattr(requests, "post", fake_post)
     with pytest.raises(rt.RouteError, match="키가 올바르지 않거나"):
         rt.get_routes(START, END, source="tmap", app_key="BAD")
-    assert len(calls) == 1
+    assert len(calls) == 3
 
 
 def test_partial_failure_keeps_successful_routes(monkeypatch):

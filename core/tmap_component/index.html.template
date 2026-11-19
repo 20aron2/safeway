@@ -48,7 +48,7 @@
   function setHeight(h) { send("streamlit:setFrameHeight", { height: h }); }
   function setValue(v) { send("streamlit:setComponentValue", { value: v, dataType: "json" }); }
 
-  var map = null, overlays = [], lastFitKey = null, height = 460, fullscreen = false;
+  var map = null, overlays = [], lastFitKey = null, lastDrawKey = null, height = 460, fullscreen = false;
   var me = { watch: null, marker: null, ring: null, centered: false };
 
   function showError(text) {
@@ -294,7 +294,9 @@
   function handle(d) {
     try {
       if (!map) init(d);
-      if (map) draw(d);
+      // 내용이 그대로면 다시 그리지 않는다 (앱의 다른 버튼을 누를 때마다 지도가 깜빡이고 느려지는 것 방지)
+      var key = JSON.stringify(d);
+      if (map && key !== lastDrawKey) { lastDrawKey = key; draw(d); }
     } catch (e) {
       showError("지도를 그리는 중 문제가 생겼어요: " + e.message + " — 지도 선택에서 브이월드로 바꿔 주세요.");
     }
