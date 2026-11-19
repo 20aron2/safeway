@@ -84,8 +84,63 @@ header[data-testid="stHeader"], [data-testid="stToolbar"], #MainMenu, footer {di
 """
 
 
-def inject_css() -> None:
-    st.markdown(CSS, unsafe_allow_html=True)
+# 네이버지도처럼: 지도가 화면 전체, 검색창은 위에 떠 있고, 결과는 아래에서 올라오는 패널
+FULLSCREEN_CSS = """
+<style>
+html, body, [data-testid="stAppViewContainer"], [data-testid="stMain"] {overflow: hidden !important;}
+.block-container {padding: 0 !important; max-width: none !important;}
+
+/* ---------- 지도: 화면 전체 */
+.st-key-mapwrap {position: fixed !important; top: 0; left: 0; right: 0; bottom: 0; z-index: 1;
+  width: 100vw !important; height: 100vh; height: 100dvh; background: #E5E7EB;}
+.st-key-mapwrap [data-testid="stVerticalBlock"], .st-key-mapwrap [data-testid="stElementContainer"],
+.st-key-mapwrap [data-testid="stVerticalBlockBorderWrapper"] {width: 100% !important; max-width: none !important;}
+.st-key-mapwrap iframe {width: 100vw !important; height: 100vh !important; height: 100dvh !important;
+  display: block; border: 0;}
+
+/* ---------- 위: 떠 있는 검색창 + 추천 기준 */
+.st-key-topbar {position: fixed !important; z-index: 30; width: auto !important; gap: .45rem !important;
+  top: 10px; top: max(10px, env(safe-area-inset-top)); left: 10px; right: 10px;}
+.st-key-searchbox {background: #fff; border-radius: 22px; padding: .6rem .75rem !important;
+  box-shadow: 0 4px 18px rgba(0,0,0,.2); max-height: 62vh; overflow-y: auto;}
+.st-key-searchbox input {border-radius: 12px;}
+.st-key-modebar button {background: #fff; border-radius: 999px !important; border-color: #E5E7EB;
+  box-shadow: 0 2px 8px rgba(0,0,0,.2); min-height: 2.3rem;}
+.st-key-modebar button[kind$="Active"], .st-key-modebar button[aria-checked="true"] {
+  background: #111827 !important; color: #fff !important; border-color: #111827 !important;}
+.st-key-modebar button[kind$="Active"] p, .st-key-modebar button[aria-checked="true"] p {color: #fff !important;}
+.st-key-modebar [data-testid="stPopover"] button {width: 100%; justify-content: center; font-weight: 700;}
+.st-key-modebar [data-testid="stPopover"] button [data-testid="stIconMaterial"] {display: none;}
+.st-key-modebar [data-testid="stColumn"]:last-child [data-testid="stPopover"] button {color: #B91C1C; border-color: #FCA5A5;}
+
+/* ---------- 아래: 결과 패널 (▲ 더 보기 / ▼ 접기) */
+[class*="st-key-sheet_"] {position: fixed !important; z-index: 20; left: 0; right: 0; bottom: 0;
+  width: auto !important; background: #fff; border-radius: 22px 22px 0 0;
+  box-shadow: 0 -4px 22px rgba(0,0,0,.2); flex-wrap: nowrap !important;
+  padding: .15rem .9rem 1rem !important; padding-bottom: calc(1rem + env(safe-area-inset-bottom)) !important;
+  max-height: 40vh; max-height: 40dvh; overflow-y: auto; overscroll-behavior: contain; gap: .55rem !important;}
+.st-key-sheet_full {max-height: 86vh; max-height: 86dvh;}
+[class*="st-key-sheet_"] > * {flex-shrink: 0 !important;}   /* 내용이 눌리지 않고 패널 안에서 스크롤 */
+.st-key-btn_reset button p {white-space: nowrap;}
+.st-key-btn_sheet button {width: 100%; min-height: 1.5rem; padding: 0; border: none; background: transparent;
+  color: #9CA3AF;}
+.st-key-btn_sheet button p {font-size: .75rem;}
+[class*="st-key-sheet_"] .sw-sub {display: none;}
+[class*="st-key-sheet_"] .sw-foot {margin-top: .2rem;}
+
+/* ---------- PC: 네이버지도 PC처럼 왼쪽 패널 */
+@media (min-width: 900px) {
+  .st-key-topbar {left: 16px; right: auto; top: 16px; width: 410px !important;}
+  [class*="st-key-sheet_"], .st-key-sheet_full {left: 16px; right: auto; bottom: 16px; width: 410px !important;
+    border-radius: 22px; max-height: calc(100vh - 190px);}
+  .st-key-btn_sheet {display: none;}
+}
+</style>
+"""
+
+
+def inject_css(fullscreen: bool = False) -> None:
+    st.markdown(CSS + (FULLSCREEN_CSS if fullscreen else ""), unsafe_allow_html=True)
 
 
 def header_html(is_demo: bool) -> str:

@@ -21,6 +21,10 @@
             background: #fff; border-radius: 8px; padding: 7px 10px; font-size: 13px; cursor: pointer;
             box-shadow: 0 1px 4px rgba(0,0,0,.2); }
   #locate.on { background: #2563EB; color: #fff; border-color: #2563EB; }
+  /* 화면 가득 지도: 모서리 둥글림 없이, 내 위치 버튼은 오른쪽 가운데 둥근 버튼으로 */
+  #wrap.fs { border-radius: 0; }
+  #wrap.fs #locate { top: 46%; left: auto; right: 12px; width: 46px; height: 46px; padding: 0; border-radius: 50%;
+                     border: none; font-size: 20px; box-shadow: 0 2px 8px rgba(0,0,0,.28); }
   /* 야간: 지도 바탕 그림(타일)만 어둡게. 우리가 그린 아이콘(data: 이미지)과 선은 그대로 */
   #wrap.night #map_div img:not([src^="data:"]) {
     filter: invert(0.92) hue-rotate(180deg) brightness(0.95) contrast(0.9);
@@ -44,7 +48,7 @@
   function setHeight(h) { send("streamlit:setFrameHeight", { height: h }); }
   function setValue(v) { send("streamlit:setComponentValue", { value: v, dataType: "json" }); }
 
-  var map = null, overlays = [], lastFitKey = null, height = 460;
+  var map = null, overlays = [], lastFitKey = null, height = 460, fullscreen = false;
   var me = { watch: null, marker: null, ring: null, centered: false };
 
   function showError(text) {
@@ -110,7 +114,7 @@
   function draw(d) {
     clearOverlays();
     var wrap = document.getElementById("wrap");
-    wrap.className = d.night ? "night" : "";
+    wrap.className = (d.night ? "night" : "") + (fullscreen ? " fs" : "");
 
     (d.lights || []).forEach(function (f) {          // 보안등: 화면에서 항상 같은 크기의 작은 노란 점
       var s = f.on ? 10 : 7;
@@ -151,7 +155,7 @@
       if (pts.length >= 2) {
         var b = new Tmapv2.LatLngBounds();
         pts.forEach(function (p) { b.extend(LL(p)); });
-        try { map.fitBounds(b, { left: 40, top: 40, right: 40, bottom: 40 }); }
+        try { map.fitBounds(b, fitMargin()); }
         catch (e) { map.fitBounds(b); }
       } else if (pts.length === 1) {
         map.setCenter(LL(pts[0]));
@@ -186,13 +190,32 @@
       }
       if (!me.centered) { map.setCenter(LL(p)); me.centered = true; }
     }, function () {
-      btn.className = ""; btn.textContent = "위치 권한 필요"; me.watch = null;
+      btn.className = ""; btn.textContent = fullscreen ? "🚫" : "위치 권한 필요"; me.watch = null;
     }, { enableHighAccuracy: true, maximumAge: 5000 });
   }
 
   // ------------------------------------------------ 시작
+  // 화면 가득 지도일 때 지도 높이 = 창 높이
+  function fullHeight() { return window.innerHeight > 200 ? window.innerHeight : 700; }
+
+  // 경로가 검색창·결과 패널에 가려지지 않게 두는 여백 (휴대폰: 위·아래, PC: 왼쪽 패널)
+  function fitMargin() {
+    if (!fullscreen) return { left: 40, top: 40, right: 40, bottom: 40 };
+    if (window.innerWidth >= 900) return { left: 460, top: 50, right: 70, bottom: 50 };
+    return { left: 30, top: 200, right: 30, bottom: Math.round(fullHeight() * 0.42) };
+  }
+
   function init(d) {
-    height = d.height || 460;
+    fullscreen = !!d.fullscreen;
+    height = fullscreen ? fullHeight() : (d.height || 460);
+    if (fullscreen) {
+      document.getElementById("locate").textContent = "📍";
+      window.addEventListener("resize", function () {   // 휴대폰을 돌리거나 창 크기를 바꿀 때
+        height = fullHeight();
+        document.getElementById("map_div").style.height = height + "px";
+        try { if (map && map.resize) map.resize(); } catch (e) {}
+      });
+    }
     if (typeof Tmapv2 === "undefined") {
       showError("TMAP 지도를 불러오지 못했어요. 지도 위 '지도 선택'에서 브이월드로 바꿔 주세요. " +
                 "(TMAP 키 또는 인터넷 연결을 확인해 주세요)");

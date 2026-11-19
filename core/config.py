@@ -11,6 +11,9 @@ REGION_CENTER = (35.1796, 129.0756)
 REGION_RADIUS_KM = 30
 DEFAULT_ZOOM = 16  # 도보 경로가 잘 보이는 확대 수준
 MAP_HEIGHT_PX = 500
+# 네이버지도처럼: 지도가 화면을 가득 채우고 검색창·결과 패널이 그 위에 뜬다.
+# 화면이 이상하게 나오면 False로 바꾸면 예전 화면(위에서 아래로 쌓이는 화면)으로 돌아간다.
+FULLSCREEN_UI = True
 # 기본 지도: "tmap"(TMAP 웹 지도, TMAP 키 필요) 또는 "vworld"(브이월드, 키 없으면 OpenStreetMap)
 MAP_PROVIDER = "tmap"
 MAP_TILES = "OpenStreetMap"  # 브이월드 키가 없을 때 쓰는 기본 지도

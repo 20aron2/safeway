@@ -47,7 +47,8 @@ def _police_icon() -> folium.DivIcon:
 def build_map(start=None, end=None, start_name=None, end_name=None, routes=None, selected_id=None,
               facilities: pd.DataFrame | None = None, near_ids=(),
               vworld_key: str | None = None, gap_segments=(), police=(),
-              night: bool = False, dark_segments=(), stores=()) -> folium.Map:
+              night: bool = False, dark_segments=(), stores=(),
+              fullscreen: bool = False) -> folium.Map:
     routes = routes or []
     points = [p for p in (start, end) if p] + [c for r in routes for c in r["coords"]]
     center = points[0] if len(points) == 1 else config.DEFAULT_CENTER
@@ -135,5 +136,9 @@ def build_map(start=None, end=None, start_name=None, end_name=None, routes=None,
     if len(points) >= 2:
         lats = [p[0] for p in points]
         lons = [p[1] for p in points]
-        m.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]], padding=(30, 30), max_zoom=17)
+        box = [[min(lats), min(lons)], [max(lats), max(lons)]]
+        if fullscreen:  # 위 검색창·아래 결과 패널에 가려지지 않게 여백을 둔다
+            m.fit_bounds(box, padding_top_left=(30, 200), padding_bottom_right=(30, 360), max_zoom=17)
+        else:
+            m.fit_bounds(box, padding=(30, 30), max_zoom=17)
     return m

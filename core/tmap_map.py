@@ -29,7 +29,8 @@ def _pt(p) -> list[float]:
 
 def build_payload(start=None, end=None, start_name=None, end_name=None, routes=None,
                   selected_id=None, facilities: pd.DataFrame | None = None, near_ids=(),
-                  gap_segments=(), police=(), night: bool = False, dark_segments=(), stores=()) -> dict:
+                  gap_segments=(), police=(), night: bool = False, dark_segments=(), stores=(),
+                  fullscreen: bool = False) -> dict:
     routes = routes or []
     near = set(map(str, near_ids))
     # 선택한 경로를 마지막에 두어 맨 위에 그려지게 한다
@@ -69,6 +70,7 @@ def build_payload(start=None, end=None, start_name=None, end_name=None, routes=N
         "fit_points": fit_points,
         "fit_key": fit_key,
         "night": bool(night),
+        "fullscreen": bool(fullscreen),   # 화면 가득 지도 (검색창·패널에 가려지는 만큼 여백을 둔다)
     }
 
 
